@@ -261,6 +261,8 @@ src/
 
 ## 🤝 贡献
 
+提交到 `main` 的 Pull Request 和合并后的 `main` 推送会自动触发 CI，在 Windows / Linux 上运行测试、类型检查和生产构建。发布安装包由 `v*` 标签触发的 Release 工作流负责。
+
 欢迎提交 Issue 和 Pull Request。建议在提交前运行：
 
 ```bash

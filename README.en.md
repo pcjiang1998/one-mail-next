@@ -259,6 +259,8 @@ src/
 
 ## Contributing
 
+Pull requests targeting `main` and pushes to `main` automatically run tests, type checks, and production builds on Windows and Linux. The Release workflow builds release packages when a `v*` tag is pushed.
+
 Issues and pull requests are welcome. Before submitting, please run:
 
 ```bash

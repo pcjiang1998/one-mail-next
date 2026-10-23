@@ -41,6 +41,8 @@
 
 #### 构建与验证
 
+- 新增 PR 和 `main` 推送触发的 CI，在 Windows / Linux、Node.js 24 环境安装锁定依赖、运行测试及类型检查和生产构建。原有标签触发的 Release 工作流继续负责发布打包。
+
 - `scripts/build-win-unpacked.ps1`：Windows x64 目录版；`scripts/build-win-x64.ps1`：Windows x64 安装包；共用 `build-win-pwsh7.ps1`，支持 `-SkipInstall`，日志位于 `dist/build-logs`。
 - 已完成类型检查、生产构建和修改文件的 ESLint 检查。回归共覆盖 50 个测试文件、188 个用例；其中 4 个旧用例补齐 Electron 模拟后通过定向复测。
 - 已重新生成 Windows x64 `win-unpacked` 并检查文件与版本信息，尚未对该产物做启动验收。本次更改后的安装包尚未重新生成。
@@ -72,6 +74,8 @@ Baseline: `origin/main` at `3cc38678519d7c38ee9e25a8f9989b5169934000`. The remot
 - Multi-selection, folder views, default mail handling, POP3, translation, proxies, and signatures already exist in the baseline and are not counted as new features here. Earlier notes are retained below.
 
 #### Verification
+
+Added CI for pull requests targeting `main` and pushes to `main`, installing locked dependencies and running tests, type checks, and production builds on Windows and Linux with Node.js 24. The existing tag-triggered Release workflow continues to handle release packaging.
 
 Type checks, production builds, and ESLint checks for changed files passed. Regression verification covers 188 tests in 50 files, including four targeted reruns after correcting Electron mocks. The Windows x64 directory build was regenerated and its files/version checked, but not launch-tested. Installers have not been rebuilt for these changes. An output-EXE `EBUSY` error cleared on a packaging-only retry; the lock owner was not identified and no process termination or retry automation was added.
 
