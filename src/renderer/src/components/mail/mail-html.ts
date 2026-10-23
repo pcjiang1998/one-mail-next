@@ -1,501 +1,377 @@
+import { isLikelyMailTracker, type MailImageHints } from '../../../../shared/mail-privacy'
+import type { PrivacyMode } from '../../../../shared/types'
+
 export type PreparedMailHtml = {
   html: string
   blockedResourceCount: number
+  /** Ordinary images which can be loaded with the per-message action. */
   blockedImageResourceCount: number
+  blockedTrackerResourceCount: number
   removedUnsafeElementCount: number
 }
 
-type PrepareMailHtmlOptions = {
-  allowExternalImages: boolean
+export type PrepareMailHtmlOptions = {
+  mode?: PrivacyMode
+  /** Only overrides strict image blocking, never tracker blocking. */
+  allowRemoteImages?: boolean
+  /** Compatibility for old callers; new callers must pass mode. */
+  allowExternalImages?: boolean
 }
 
-const removedElementSelector = [
-  'script',
-  'noscript',
-  'iframe',
-  'frame',
-  'frameset',
-  'object',
-  'embed',
-  'applet',
-  'base',
-  'meta',
-  'link',
-  'form',
-  'input',
-  'button',
-  'textarea',
-  'select',
-  'option',
-  'svg',
-  'math'
-].join(',')
-
+type ResourcePolicy = { mode: PrivacyMode; allowRemoteImages: boolean }
+type Counters = Omit<PreparedMailHtml, 'html'>
 const resourceAttributes = ['src', 'srcset', 'poster', 'background'] as const
-const blockedResourceOnlyContainerSelector = [
-  'a',
-  'span',
-  'p',
-  'div',
-  'center',
-  'section',
-  'article',
-  'td',
-  'th',
-  'tr',
-  'tbody',
-  'thead',
-  'tfoot',
-  'table'
-].join(',')
-const layoutBreakingStyleProperties = new Set([
-  'position',
-  'top',
-  'right',
-  'bottom',
-  'left',
-  'inset',
-  'inset-block',
-  'inset-block-start',
-  'inset-block-end',
-  'inset-inline',
-  'inset-inline-start',
-  'inset-inline-end',
-  'z-index',
-  'float',
-  'transform',
-  'translate',
-  'scale',
-  'rotate',
-  'filter',
-  'backdrop-filter',
-  'clip',
-  'clip-path'
+const allowedTags = new Set(
+  'a abbr address article b bdi bdo blockquote br caption center cite code col colgroup dd del details dfn div dl dt em figcaption figure font footer h1 h2 h3 h4 h5 h6 header hr i img ins kbd li main mark ol p picture pre q rp rt ruby s samp section small source span strike strong sub summary sup table tbody td tfoot th thead time tr tt u ul var wbr'.split(
+    ' '
+  )
+)
+const removedSubtrees = new Set(
+  'script noscript style iframe frame frameset object embed applet base meta link form input button textarea select option svg math template audio video canvas'.split(
+    ' '
+  )
+)
+const allowedAttributes = new Set(
+  'alt title width height align valign bgcolor color face size border cellpadding cellspacing colspan rowspan dir lang start reversed'.split(
+    ' '
+  )
+)
+const allowedStyleProperties = new Set(
+  'color background background-color background-image background-position background-size background-repeat background-origin background-clip border border-color border-width border-style border-top border-right border-bottom border-left border-top-color border-right-color border-bottom-color border-left-color border-radius border-collapse border-spacing box-sizing box-shadow display visibility opacity font font-family font-size font-style font-weight font-variant line-height letter-spacing word-spacing text-align text-decoration text-transform text-indent text-overflow white-space word-break overflow-wrap vertical-align width min-width max-width height min-height max-height margin margin-top margin-right margin-bottom margin-left padding padding-top padding-right padding-bottom padding-left list-style-type list-style-position list-style-image table-layout direction unicode-bidi'.split(
+    ' '
+  )
+)
+const imageStyleProperties = new Set(['background', 'background-image', 'list-style-image'])
+const allowedCssFunctions = new Set([
+  'rgb',
+  'rgba',
+  'hsl',
+  'hsla',
+  'hwb',
+  'lab',
+  'lch',
+  'oklab',
+  'oklch',
+  'color',
+  'calc',
+  'min',
+  'max',
+  'clamp',
+  'linear-gradient',
+  'radial-gradient',
+  'repeating-linear-gradient',
+  'repeating-radial-gradient'
 ])
+const blockedResourceOnlyContainerSelector =
+  'a,span,p,div,center,section,article,td,th,tr,tbody,thead,tfoot,table'
 
-export function prepareMailHtml(
-  html: string,
-  { allowExternalImages }: PrepareMailHtmlOptions
-): PreparedMailHtml {
-  const document = new DOMParser().parseFromString(html, 'text/html')
-  const counters = {
+export function prepareMailHtml(html: string, options: PrepareMailHtmlOptions): PreparedMailHtml {
+  const policy: ResourcePolicy = {
+    mode: options.mode ?? (options.allowExternalImages ? 'unrestricted' : 'strict'),
+    allowRemoteImages: options.allowRemoteImages ?? false
+  }
+  // Template contents are inert: parsing must not itself fetch images before policy is applied.
+  // Unlike parsing directly into the live document, neither styles nor resources are activated.
+  const template = document.createElement('template')
+  template.innerHTML = html
+  const root = template.content
+  const counters: Counters = {
     blockedResourceCount: 0,
     blockedImageResourceCount: 0,
+    blockedTrackerResourceCount: 0,
     removedUnsafeElementCount: 0
   }
 
-  for (const element of Array.from(document.body.querySelectorAll(removedElementSelector))) {
-    counters.removedUnsafeElementCount += 1
-    element.remove()
-  }
-
-  for (const element of Array.from(document.body.querySelectorAll('*'))) {
-    sanitizeAttributes(element, allowExternalImages, counters)
-  }
-
-  if (!allowExternalImages) {
-    markBlockedResourceOnlyContainers(document.body)
-  } else {
-    for (const element of Array.from(document.body.querySelectorAll('[data-mail-blocked-only]'))) {
-      element.removeAttribute('data-mail-blocked-only')
+  for (const element of Array.from(root.querySelectorAll('*'))) {
+    if (!root.contains(element)) continue
+    const tag = element.localName.toLowerCase()
+    if (element.namespaceURI !== 'http://www.w3.org/1999/xhtml' || removedSubtrees.has(tag)) {
+      counters.removedUnsafeElementCount += 1
+      element.remove()
+    } else if (!allowedTags.has(tag)) {
+      counters.removedUnsafeElementCount += 1
+      element.replaceWith(...Array.from(element.childNodes))
     }
   }
-
-  return {
-    html: document.body.innerHTML,
-    ...counters
+  for (const element of Array.from(root.querySelectorAll('*'))) {
+    sanitizeAttributes(element, policy, counters)
   }
+  markBlockedResourceOnlyContainers(root)
+  return { html: template.innerHTML, ...counters }
 }
 
-function sanitizeAttributes(
-  element: Element,
-  allowExternalImages: boolean,
-  counters: {
-    blockedResourceCount: number
-    blockedImageResourceCount: number
-  }
-): void {
+function sanitizeAttributes(element: Element, policy: ResourcePolicy, counters: Counters): void {
+  const hints = getImageHints(element)
   for (const attribute of Array.from(element.attributes)) {
     const name = attribute.name.toLowerCase()
-
-    if (name.startsWith('on') || name === 'srcdoc' || name === 'ping') {
-      element.removeAttribute(attribute.name)
+    if (
+      allowedAttributes.has(name) ||
+      name === 'style' ||
+      name === 'data-blocked-style' ||
+      resourceAttributes.some(
+        (resource) => name === resource || name === `data-blocked-${resource}`
+      ) ||
+      (name === 'href' && element.localName === 'a')
+    )
       continue
-    }
-
-    if ((name === 'href' || name.endsWith(':href')) && !isSafeHref(attribute.value)) {
-      element.removeAttribute(attribute.name)
-    }
+    // Includes event handlers, ping, srcdoc, namespaced hrefs, custom elements' attributes,
+    // and sender-supplied marker/class/id attributes which could affect the surrounding app.
+    element.removeAttribute(attribute.name)
   }
-
   for (const attribute of resourceAttributes) {
-    sanitizeResourceAttribute(element, attribute, allowExternalImages, counters)
+    sanitizeResourceAttribute(element, attribute, policy, hints, counters)
   }
-
-  sanitizeStyleAttribute(element, allowExternalImages, counters)
-  hardenLinks(element)
+  sanitizeStyleAttribute(element, policy, hints, counters)
+  const href = element.getAttribute('href')
+  if (href) {
+    if (!isSafeHref(href)) element.removeAttribute('href')
+    else {
+      element.setAttribute('target', '_blank')
+      element.setAttribute('rel', 'noopener noreferrer nofollow')
+      element.setAttribute('referrerpolicy', 'no-referrer')
+    }
+  }
+  if (element.localName === 'img') {
+    element.setAttribute('loading', 'lazy')
+    element.setAttribute('decoding', 'async')
+    element.setAttribute('referrerpolicy', 'no-referrer')
+  }
 }
 
 function sanitizeResourceAttribute(
   element: Element,
   attribute: (typeof resourceAttributes)[number],
-  allowExternalImages: boolean,
-  counters: {
-    blockedResourceCount: number
-    blockedImageResourceCount: number
-  }
+  policy: ResourcePolicy,
+  hints: MailImageHints,
+  counters: Counters
 ): void {
-  const blockedAttribute = toBlockedAttribute(attribute)
-  const blockedValue = element.getAttribute(blockedAttribute)
-
-  if (
-    blockedValue &&
-    allowExternalImages &&
-    canRestoreImageResource(element, attribute) &&
-    isSafeResourceValue(attribute, normalizeRestoredResourceValue(attribute, blockedValue))
-  ) {
-    element.setAttribute(attribute, normalizeRestoredResourceValue(attribute, blockedValue))
-    element.removeAttribute(blockedAttribute)
-    element.removeAttribute('data-mail-blocked-resource')
-    hardenImageElement(element)
-    return
-  }
-
-  const value = element.getAttribute(attribute)
-  const shouldBlock =
-    Boolean(value) &&
-    (!allowExternalImages ||
-      !canRestoreImageResource(element, attribute) ||
-      !isSafeResourceValue(attribute, value ?? ''))
-
-  if (shouldBlock) {
-    rememberBlockedResource(element, attribute, counters)
-    return
-  }
-
-  if (blockedValue) {
+  const blockedAttribute = `data-blocked-${attribute}`
+  const original = element.getAttribute(blockedAttribute) ?? element.getAttribute(attribute)
+  element.removeAttribute(attribute)
+  if (!original) return
+  // Preserve the full original, including filtered srcset candidates, in every mode. A cache or
+  // translation can be reprocessed under another policy without losing the blocked URLs.
+  element.setAttribute(blockedAttribute, original)
+  if (!isImageResource(element, attribute)) {
     counters.blockedResourceCount += 1
-    if (canRestoreImageResource(element, attribute)) {
-      counters.blockedImageResourceCount += 1
-    }
-    markBlockedResource(element, attribute)
+    return
   }
+  if (attribute === 'srcset') {
+    const candidates = parseSrcset(original)
+    if (!candidates) {
+      counters.blockedResourceCount += 1
+      return
+    }
+    const allowed = candidates.filter(({ url }) => resourceAllowed(url, policy, hints, counters))
+    if (allowed.length > 0) {
+      element.setAttribute(
+        attribute,
+        allowed
+          .map(({ url, descriptor }) => `${url}${descriptor ? ` ${descriptor}` : ''}`)
+          .join(', ')
+      )
+    }
+    if (allowed.length < candidates.length)
+      element.setAttribute('data-mail-blocked-resource', 'true')
+    return
+  }
+  const url = normalizeResourceUrl(original)
+  if (resourceAllowed(url, policy, hints, counters)) element.setAttribute(attribute, url!)
+  else element.setAttribute('data-mail-blocked-resource', 'true')
+}
 
-  if (value) hardenImageElement(element)
+function resourceAllowed(
+  url: string | null,
+  policy: ResourcePolicy,
+  hints: MailImageHints,
+  counters: Counters
+): boolean {
+  if (!url) {
+    counters.blockedResourceCount += 1
+    return false
+  }
+  if (!/^https?:/i.test(url)) return true // Local CID/raster data images do not contact a server.
+  if (policy.mode === 'unrestricted') return true
+  if (isLikelyMailTracker(url, hints)) {
+    counters.blockedResourceCount += 1
+    counters.blockedTrackerResourceCount += 1
+    return false
+  }
+  if (policy.mode === 'loose' || policy.allowRemoteImages) return true
+  counters.blockedResourceCount += 1
+  counters.blockedImageResourceCount += 1
+  return false
+}
+
+function isImageResource(
+  element: Element,
+  attribute: (typeof resourceAttributes)[number]
+): boolean {
+  if (attribute === 'background') return true
+  if (element.localName === 'img') return attribute === 'src' || attribute === 'srcset'
+  return (
+    element.localName === 'source' &&
+    attribute === 'srcset' &&
+    element.parentElement?.localName === 'picture'
+  )
+}
+
+function normalizeResourceUrl(value: string): string | null {
+  let url = value.trim()
+  if (!url || /[\x00-\x20\x7f\\]/.test(url)) return null
+  if (/^data:image\/(?:avif|bmp|gif|jpeg|jpg|png|webp);base64,[a-z0-9+/]+=*$/i.test(url)) return url
+  if (/^cid:[^<>"']+$/i.test(url)) return url
+  if (url.startsWith('//')) url = `https:${url}`
+  if (/^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d+)?(?:[/?#]|$)/i.test(url)) url = `https://${url}`
+  try {
+    const parsed = new URL(url)
+    if (
+      !['http:', 'https:'].includes(parsed.protocol) ||
+      !parsed.hostname ||
+      parsed.username ||
+      parsed.password
+    )
+      return null
+    return parsed.href
+  } catch {
+    return null // Never resolve a relative resource against the application's origin/filesystem.
+  }
+}
+
+function parseSrcset(value: string): Array<{ url: string; descriptor: string }> | null {
+  // Deliberately accept only unambiguous HTTP/CID candidates. Comma-containing data URLs are
+  // supported through img.src, not srcset; ambiguous lists fail closed rather than leak a URL.
+  if (/data:/i.test(value)) return null
+  const result: Array<{ url: string; descriptor: string }> = []
+  for (const candidate of value.split(',')) {
+    const parts = candidate.trim().split(/\s+/)
+    if (!parts[0] || parts.length > 2) return null
+    const descriptor = parts[1] ?? ''
+    if (descriptor && !/^(?:[1-9]\d*w|(?:\d+(?:\.\d+)?|\.\d+)x)$/.test(descriptor)) return null
+    const url = normalizeResourceUrl(parts[0])
+    if (!url) return null
+    result.push({ url, descriptor })
+  }
+  return result.length ? result : null
+}
+
+function getImageHints(element: Element): MailImageHints {
+  const scratch = element.ownerDocument.createElement('span')
+  scratch.setAttribute(
+    'style',
+    element.getAttribute('data-blocked-style') ?? element.getAttribute('style') ?? ''
+  )
+  const dimension = (name: 'width' | 'height'): number | undefined => {
+    const value = scratch.style.getPropertyValue(name) || element.getAttribute(name) || ''
+    return /^\d+(?:\.\d+)?(?:px)?$/i.test(value.trim()) ? Number.parseFloat(value) : undefined
+  }
+  return {
+    width: dimension('width'),
+    height: dimension('height'),
+    hidden:
+      scratch.style.display === 'none' ||
+      scratch.style.visibility === 'hidden' ||
+      (scratch.style.opacity !== '' && Number(scratch.style.opacity) === 0)
+  }
 }
 
 function sanitizeStyleAttribute(
   element: Element,
-  allowExternalImages: boolean,
-  counters: {
-    blockedResourceCount: number
-    blockedImageResourceCount: number
-  }
+  policy: ResourcePolicy,
+  hints: MailImageHints,
+  counters: Counters
 ): void {
-  const blockedStyle = element.getAttribute('data-blocked-style')
-  const inlineStyle = element.getAttribute('style')
-  const style = inlineStyle ?? (allowExternalImages ? blockedStyle : null)
-
-  if (!style) {
-    if (blockedStyle) {
-      counters.blockedResourceCount += 1
-      counters.blockedImageResourceCount += 1
+  const original = element.getAttribute('data-blocked-style') ?? element.getAttribute('style')
+  element.removeAttribute('style')
+  if (!original) return
+  element.setAttribute('data-blocked-style', original)
+  // Escaped CSS identifiers, comments, at-rules and custom properties make URL detection
+  // ambiguous. Do not activate such declarations, even in unrestricted mode.
+  if (/[\\@]|\/\*|\*\/|expression\s*\(|javascript\s*:|-moz-binding|behavior\s*:/i.test(original))
+    return
+  const scratch = element.ownerDocument.createElement('span')
+  scratch.setAttribute('style', original)
+  const declarations: string[] = []
+  for (let index = 0; index < scratch.style.length; index += 1) {
+    const property = scratch.style.item(index).toLowerCase()
+    const value = scratch.style.getPropertyValue(property).trim()
+    if (!allowedStyleProperties.has(property) || !value) continue
+    if (
+      (property.startsWith('margin') || ['text-indent', 'letter-spacing'].includes(property)) &&
+      /(^|[\s(])-\d/.test(value)
+    )
+      continue
+    if (property === 'line-height' && /^0(?:\.0+)?(?:px|em|rem|%)?$/.test(value)) continue
+    const urls: Array<{ match: string; url: string | null }> = []
+    const remainder = value.replace(
+      /url\(\s*(?:"([^"]*)"|'([^']*)'|([^\s'"()]*))\s*\)/gi,
+      (match: string, double: string, single: string, bare: string) => {
+        urls.push({ match, url: normalizeResourceUrl(double ?? single ?? bare) })
+        return ''
+      }
+    )
+    if (urls.length && !imageStyleProperties.has(property)) continue
+    if (/url\s*\(/i.test(remainder)) continue
+    if (
+      Array.from(remainder.matchAll(/([a-z-]+)\s*\(/gi)).some(
+        (match) => !allowedCssFunctions.has(match[1].toLowerCase())
+      )
+    )
+      continue
+    const decisions = urls.map((entry) => ({
+      entry,
+      allowed: resourceAllowed(entry.url, policy, hints, counters)
+    }))
+    let sanitized = value
+    for (const { entry, allowed } of decisions) {
+      // CSS quoting must remain unambiguous after URL normalization. A blocked layer becomes
+      // `none`, so an ordinary layer in the same declaration can still load after the action.
+      const replacement =
+        allowed && entry.url && !/["'()]/.test(entry.url) ? `url("${entry.url}")` : 'none'
+      sanitized = sanitized.replace(entry.match, replacement)
+    }
+    if (decisions.some(({ allowed }) => !allowed)) {
       element.setAttribute('data-mail-blocked-resource', 'true')
     }
-    return
+    if (decisions.some(({ allowed }) => allowed)) declarations.push(`${property}: ${sanitized}`)
   }
-
-  if (!isSafeStyle(style)) {
-    element.removeAttribute('style')
-    element.removeAttribute('data-blocked-style')
-    element.removeAttribute('data-mail-blocked-resource')
-    return
-  }
-
-  const sanitized = sanitizeStyleDeclarations(element, style, allowExternalImages)
-
-  if (sanitized.blockedResource) {
-    element.setAttribute('data-blocked-style', style)
-    element.removeAttribute('style')
-    element.setAttribute('data-mail-blocked-resource', 'true')
-    counters.blockedResourceCount += 1
-    counters.blockedImageResourceCount += 1
-    return
-  }
-
-  if (sanitized.style) {
-    element.setAttribute('style', sanitized.style)
-  } else {
-    element.removeAttribute('style')
-  }
-
-  if (allowExternalImages) {
-    element.removeAttribute('data-blocked-style')
-    element.removeAttribute('data-mail-blocked-resource')
-  }
-}
-
-function sanitizeStyleDeclarations(
-  element: Element,
-  value: string,
-  allowExternalImages: boolean
-): { style: string; blockedResource: boolean } {
-  const scratch = element.ownerDocument.createElement('span')
-  scratch.setAttribute('style', value)
-
-  const declarations: string[] = []
-  let blockedResource = false
-
-  for (const property of Array.from({ length: scratch.style.length }, (_, index) =>
-    scratch.style.item(index)
-  )) {
-    const name = property.toLowerCase()
-    const propertyValue = scratch.style.getPropertyValue(property).trim()
-
-    if (!propertyValue || shouldDropStyleProperty(name, propertyValue)) continue
-
-    if (styleLoadsResource(`${name}: ${propertyValue}`)) {
-      if (!allowExternalImages) {
-        blockedResource = true
-        continue
-      }
-
-      if (!styleResourceUrlsAreSafe(propertyValue)) continue
-    }
-
-    declarations.push(`${name}: ${propertyValue}`)
-  }
-
-  return {
-    style: declarations.join('; '),
-    blockedResource
-  }
-}
-
-function shouldDropStyleProperty(name: string, value: string): boolean {
-  if (layoutBreakingStyleProperties.has(name)) return true
-  if (name.startsWith('animation') || name.startsWith('transition')) return true
-  if ((name === 'margin' || name.startsWith('margin-')) && hasNegativeCssLength(value)) return true
-  if ((name === 'text-indent' || name === 'letter-spacing') && hasNegativeCssLength(value)) {
-    return true
-  }
-  if (name === 'line-height' && isCollapsedLineHeight(value)) return true
-  return false
-}
-
-function hasNegativeCssLength(value: string): boolean {
-  return /(^|[\s(])-((?:\d*\.)?\d+)(px|pt|em|rem|%|vh|vw|vmin|vmax|cm|mm|in|pc|ch|ex|lh|rlh)\b/i.test(
-    value
-  )
-}
-
-function isCollapsedLineHeight(value: string): boolean {
-  return /^0(?:\.0+)?(?:px|pt|em|rem|%|vh|vw|vmin|vmax|cm|mm|in|pc|ch|ex|lh|rlh)?$/i.test(
-    value.trim()
-  )
-}
-
-function styleResourceUrlsAreSafe(value: string): boolean {
-  return Array.from(value.matchAll(/url\(\s*(['"]?)(.*?)\1\s*\)/gi)).every((match) =>
-    isSafeResourceUrl(match[2] ?? '')
-  )
-}
-
-function markBlockedResourceOnlyContainers(root: HTMLElement): void {
-  const candidates = Array.from(
-    root.querySelectorAll(blockedResourceOnlyContainerSelector)
-  ).reverse()
-
-  for (const element of candidates) {
-    if (isBlockedResourceOnlyElement(element)) {
-      element.setAttribute('data-mail-blocked-only', 'true')
-    }
-  }
-}
-
-function isBlockedResourceOnlyElement(element: Element): boolean {
-  let hasBlockedResource = false
-
-  for (const child of Array.from(element.childNodes)) {
-    if (child.nodeType === Node.TEXT_NODE) {
-      if (child.textContent?.trim()) return false
-      continue
-    }
-
-    if (child.nodeType !== Node.ELEMENT_NODE) continue
-
-    const childElement = child as Element
-
-    if (isBlockedResourcePlaceholder(childElement)) {
-      hasBlockedResource = true
-      continue
-    }
-
-    if (childElement.getAttribute('data-mail-blocked-only') === 'true') {
-      hasBlockedResource = true
-      continue
-    }
-
-    if (isEmptyLayoutElement(childElement)) continue
-
-    return false
-  }
-
-  return hasBlockedResource
-}
-
-function isBlockedResourcePlaceholder(element: Element): boolean {
-  return (
-    element.getAttribute('data-mail-blocked-resource') === 'true' &&
-    !element.getAttribute('src') &&
-    !element.getAttribute('srcset')
-  )
-}
-
-function isEmptyLayoutElement(element: Element): boolean {
-  return !element.textContent?.trim() && element.children.length === 0
-}
-
-function rememberBlockedResource(
-  element: Element,
-  attribute: (typeof resourceAttributes)[number],
-  counters: {
-    blockedResourceCount: number
-    blockedImageResourceCount: number
-  }
-): void {
-  const blockedAttribute = toBlockedAttribute(attribute)
-  const value = element.getAttribute(attribute)
-
-  if (value && !element.hasAttribute(blockedAttribute)) {
-    element.setAttribute(blockedAttribute, value)
-  }
-
-  element.removeAttribute(attribute)
-  counters.blockedResourceCount += 1
-
-  if (canRestoreImageResource(element, attribute)) {
-    counters.blockedImageResourceCount += 1
-    markBlockedResource(element, attribute)
-  }
-}
-
-function markBlockedResource(
-  element: Element,
-  attribute: (typeof resourceAttributes)[number]
-): void {
-  if (canRestoreImageResource(element, attribute)) {
-    element.setAttribute('data-mail-blocked-resource', 'true')
-  }
-}
-
-function canRestoreImageResource(
-  element: Element,
-  attribute: (typeof resourceAttributes)[number]
-): boolean {
-  const tagName = element.tagName.toLowerCase()
-
-  if (attribute === 'background') return true
-  if (tagName === 'img' && (attribute === 'src' || attribute === 'srcset')) return true
-  if (tagName === 'source' && attribute === 'srcset') {
-    return element.parentElement?.tagName.toLowerCase() === 'picture'
-  }
-
-  return false
-}
-
-function hardenImageElement(element: Element): void {
-  if (element.tagName.toLowerCase() !== 'img') return
-
-  element.setAttribute('loading', 'lazy')
-  element.setAttribute('decoding', 'async')
-  element.setAttribute('referrerpolicy', 'no-referrer')
-}
-
-function hardenLinks(element: Element): void {
-  if (element.tagName.toLowerCase() !== 'a' || !element.getAttribute('href')) return
-
-  element.setAttribute('target', '_blank')
-  element.setAttribute('rel', 'noopener noreferrer nofollow')
-}
-
-function toBlockedAttribute(attribute: string): string {
-  return `data-blocked-${attribute}`
+  if (declarations.length) element.setAttribute('style', declarations.join('; '))
 }
 
 function isSafeHref(value: string): boolean {
   const trimmed = value.trim()
-  if (!trimmed || trimmed.startsWith('#')) return true
-  if (/^(https?:|mailto:|tel:)/i.test(trimmed)) return true
-  return !/^[a-z][a-z0-9+.-]*:/i.test(trimmed)
+  if (/[\x00-\x20\x7f\\]/.test(trimmed)) return false
+  return trimmed.startsWith('#') || /^(?:https?:\/\/|mailto:|tel:)/i.test(trimmed)
 }
 
-function isSafeResourceValue(
-  attribute: (typeof resourceAttributes)[number],
-  value: string
-): boolean {
-  if (attribute === 'srcset') return isSafeSrcset(value)
-  return isSafeResourceUrl(value)
-}
-
-function normalizeRestoredResourceValue(
-  attribute: (typeof resourceAttributes)[number],
-  value: string
-): string {
-  if (attribute === 'srcset') return normalizeRestoredSrcset(value)
-  return normalizeRestoredResourceUrl(value)
-}
-
-function normalizeRestoredSrcset(value: string): string {
-  return value
-    .split(',')
-    .map((candidate) => {
-      const parts = candidate.trim().split(/\s+/)
-      const url = parts[0]
-      if (!url) return ''
-      return [normalizeRestoredResourceUrl(url), ...parts.slice(1)].join(' ')
-    })
-    .filter(Boolean)
-    .join(', ')
-}
-
-function normalizeRestoredResourceUrl(value: string): string {
-  const trimmed = value.trim()
-  if (!looksLikeHostnameRelativeUrl(trimmed)) return value
-  return `https://${trimmed}`
-}
-
-function looksLikeHostnameRelativeUrl(value: string): boolean {
-  if (!value || value.startsWith('/') || /^[a-z][a-z0-9+.-]*:/i.test(value)) return false
-
-  const firstSegment = value.split(/[/?#]/, 1)[0]
-  return /^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d+)?$/i.test(firstSegment)
-}
-
-function isSafeSrcset(value: string): boolean {
-  if (/^\s*data:/i.test(value)) return false
-
-  return value
-    .split(',')
-    .map((candidate) => candidate.trim().split(/\s+/)[0])
-    .filter(Boolean)
-    .every(isSafeResourceUrl)
-}
-
-function isSafeResourceUrl(value: string): boolean {
-  const trimmed = value.trim()
-  if (!trimmed) return false
-  if (/^\/\//.test(trimmed)) return true
-  if (/^https?:/i.test(trimmed)) return true
-  if (/^cid:/i.test(trimmed)) return true
-  if (/^data:image\/(avif|bmp|gif|jpeg|jpg|png|webp);base64,/i.test(trimmed)) return true
-  return !/^[a-z][a-z0-9+.-]*:/i.test(trimmed)
-}
-
-function isSafeStyle(value: string): boolean {
-  return !/(javascript\s*:|expression\s*\(|behavior\s*:|-moz-binding\s*:)/i.test(value)
-}
-
-function styleLoadsResource(value: string): boolean {
-  return /(url\s*\(|@import)/i.test(value)
+function markBlockedResourceOnlyContainers(root: DocumentFragment): void {
+  for (const element of Array.from(
+    root.querySelectorAll(blockedResourceOnlyContainerSelector)
+  ).reverse()) {
+    let blocked = false
+    let content = false
+    for (const child of Array.from(element.childNodes)) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        if (child.textContent?.trim()) content = true
+      } else if (child.nodeType === Node.ELEMENT_NODE) {
+        const item = child as Element
+        const placeholder =
+          item.hasAttribute('data-mail-blocked-resource') &&
+          !item.hasAttribute('src') &&
+          !item.hasAttribute('srcset') &&
+          !item.hasAttribute('background') &&
+          !/url\(/i.test(item.getAttribute('style') ?? '') &&
+          !item.textContent?.trim()
+        if (placeholder || item.hasAttribute('data-mail-blocked-only')) blocked = true
+        else if (
+          item.textContent?.trim() ||
+          item.children.length ||
+          item.hasAttribute('src') ||
+          item.hasAttribute('srcset')
+        )
+          content = true
+      }
+    }
+    if (blocked && !content) element.setAttribute('data-mail-blocked-only', 'true')
+  }
 }

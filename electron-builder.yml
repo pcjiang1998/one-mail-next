@@ -7,7 +7,9 @@ protocols:
 directories:
   buildResources: build
 files:
-  - out/**
+  - out/main/**
+  - out/preload/**
+  - out/renderer/**
   - package.json
   - node_modules/**
   - resources/**

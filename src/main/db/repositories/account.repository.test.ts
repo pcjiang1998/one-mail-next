@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const electronMock = vi.hoisted(() => ({
   app: {
+    getLoginItemSettings: vi.fn(() => ({ openAtLogin: false })),
+    setLoginItemSettings: vi.fn(),
     getPath: vi.fn(() => tmpdir())
   }
 }))
@@ -13,6 +15,7 @@ vi.mock('electron', () => electronMock)
 
 import { closeDatabase, initializeDatabase, setDatabaseKey, setDatabasePath } from '../connection'
 import { createAccount, listAccounts, removeAccounts, reorderAccounts } from './account.repository'
+import { updateSettings } from './settings.repository'
 
 describe('account repository management', () => {
   let testDir = ''
@@ -39,6 +42,11 @@ describe('account repository management', () => {
     expect(account.syncMode).toBe('global')
     expect(account.accountSyncIntervalMinutes).toBe(5)
     expect(account.remoteDeletePolicy).toBe('inherit')
+    expect(account.desktopNotificationsEnabled).toBe(true)
+    updateSettings({ defaultDesktopNotificationsEnabled: false })
+    const next = createTestAccount('next@example.com')
+    expect(next.desktopNotificationsEnabled).toBe(false)
+    expect(listAccounts()[0].desktopNotificationsEnabled).toBe(true)
   })
 
   it('persists reordering, removes multiple accounts, and appends new accounts', () => {

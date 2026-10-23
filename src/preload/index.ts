@@ -15,6 +15,7 @@ const api = {
     openAddWindow: () => ipcRenderer.invoke('accounts/openAddWindow'),
     closeAddWindow: () => ipcRenderer.invoke('accounts/closeAddWindow'),
     update: (input) => ipcRenderer.invoke('accounts/update', input),
+    setNotifications: (input) => ipcRenderer.invoke('accounts/setNotifications', input),
     discoverFolders: (accountId) => ipcRenderer.invoke('accounts/discoverFolders', accountId),
     reauthorize: (accountId) => ipcRenderer.invoke('accounts/reauthorize', accountId),
     disable: (accountId) => ipcRenderer.invoke('accounts/disable', accountId),
@@ -40,6 +41,36 @@ const api = {
     bulkDelete: (input) => ipcRenderer.invoke('messages/bulkDelete', input),
     hideLocal: (messageId) => ipcRenderer.invoke('messages/hideLocal', messageId),
     restore: (messageId) => ipcRenderer.invoke('messages/restore', messageId)
+  },
+  writeback: {
+    list: () => ipcRenderer.invoke('writeback/list'),
+    status: () => ipcRenderer.invoke('writeback/status'),
+    clear: (writebackId) => ipcRenderer.invoke('writeback/clear', writebackId),
+    clearCompleted: () => ipcRenderer.invoke('writeback/clearCompleted'),
+    retry: (writebackId) => ipcRenderer.invoke('writeback/retry', writebackId),
+    onChanged: (callback): (() => void) => {
+      const listener = (_event, status): void => callback(status)
+      ipcRenderer.on('writeback/changed', listener)
+      return () => ipcRenderer.off('writeback/changed', listener)
+    }
+  },
+  contacts: {
+    list: (search) => ipcRenderer.invoke('contacts/list', search),
+    save: (input) => ipcRenderer.invoke('contacts/save', input),
+    delete: (contactId) => ipcRenderer.invoke('contacts/delete', contactId),
+    importVCard: () => ipcRenderer.invoke('contacts/importVCard'),
+    exportVCard: (contactIds) => ipcRenderer.invoke('contacts/exportVCard', contactIds)
+  },
+  tasks: {
+    list: () => ipcRenderer.invoke('tasks/list'),
+    createFromMessage: (input) => ipcRenderer.invoke('tasks/createFromMessage', input),
+    updateStatus: (input) => ipcRenderer.invoke('tasks/updateStatus', input),
+    delete: (taskIds) => ipcRenderer.invoke('tasks/delete', taskIds),
+    onChanged: (callback): (() => void) => {
+      const listener = (_event, tasks): void => callback(tasks)
+      ipcRenderer.on('tasks/changed', listener)
+      return () => ipcRenderer.off('tasks/changed', listener)
+    }
   },
   compose: {
     createNewDraft: (accountId) => ipcRenderer.invoke('compose/createNewDraft', accountId),
@@ -87,12 +118,12 @@ const api = {
     getBackupSync: () => ipcRenderer.invoke('settings/getBackupSync'),
     updateBackupSync: (input) => ipcRenderer.invoke('settings/updateBackupSync', input),
     testBackupSync: (input) => ipcRenderer.invoke('settings/testBackupSync', input),
-    uploadBackupSync: () => ipcRenderer.invoke('settings/uploadBackupSync'),
+    uploadBackupSync: (options) => ipcRenderer.invoke('settings/uploadBackupSync', options),
     downloadBackupSync: (operationId) =>
       ipcRenderer.invoke('settings/downloadBackupSync', operationId),
     importBackupFromRemote: (input, operationId) =>
       ipcRenderer.invoke('settings/importBackupFromRemote', input, operationId),
-    exportSql: () => ipcRenderer.invoke('settings/exportSql'),
+    exportSql: (options) => ipcRenderer.invoke('settings/exportSql', options),
     importSql: (operationId) => ipcRenderer.invoke('settings/importSql', operationId),
     onBackupImportProgress: (callback): (() => void) => {
       const listener = (_event, progress): void => callback(progress)
@@ -104,6 +135,21 @@ const api = {
     getSettings: () => ipcRenderer.invoke('translations/getSettings'),
     updateSettings: (input) => ipcRenderer.invoke('translations/updateSettings', input),
     translate: (input) => ipcRenderer.invoke('translations/translate', input)
+  },
+  privacy: {
+    list: () => ipcRenderer.invoke('privacy/list'),
+    update: (input) => ipcRenderer.invoke('privacy/update', input),
+    addTrustedSender: (input) => ipcRenderer.invoke('privacy/addTrustedSender', input),
+    removeTrustedSender: (trustedSenderId) =>
+      ipcRenderer.invoke('privacy/removeTrustedSender', trustedSenderId),
+    clearCache: (accountId) => ipcRenderer.invoke('privacy/clearCache', accountId)
+  },
+  rules: {
+    list: () => ipcRenderer.invoke('rules/list'),
+    save: (input) => ipcRenderer.invoke('rules/save', input),
+    delete: (ruleId) => ipcRenderer.invoke('rules/delete', ruleId),
+    reorder: (ruleIds) => ipcRenderer.invoke('rules/reorder', ruleIds),
+    setEnabled: (ruleId, enabled) => ipcRenderer.invoke('rules/setEnabled', ruleId, enabled)
   },
   updates: {
     check: () => ipcRenderer.invoke('updates/check'),

@@ -1,3 +1,4 @@
+import { getSettings } from './settings.repository'
 import {
   getDatabase,
   toBoolean,
@@ -8,6 +9,7 @@ import {
 } from '../connection'
 import type {
   AccountCreateInput,
+  AccountNotificationsInput,
   AccountMailFolder,
   AccountUpdateInput,
   MailAccount
@@ -30,6 +32,7 @@ type AccountRow = SqliteRow & {
   smtp_security: MailAccount['smtpSecurity'] | null
   smtp_auth_type: MailAccount['smtpAuthType'] | null
   smtp_enabled: number
+  desktop_notifications_enabled: number
   pop_host: string | null
   pop_port: number | null
   pop_security: MailAccount['popSecurity'] | null
@@ -68,6 +71,7 @@ export function listAccounts(): MailAccount[] {
         smtp_security,
         smtp_auth_type,
         smtp_enabled,
+        desktop_notifications_enabled,
         pop_host,
         pop_port,
         pop_security,
@@ -119,6 +123,7 @@ export function getAccount(accountId: number): MailAccount | null {
         smtp_security,
         smtp_auth_type,
         smtp_enabled,
+        desktop_notifications_enabled,
         pop_host,
         pop_port,
         pop_security,
@@ -255,6 +260,7 @@ export function createAccount(input: AccountCreateInput): MailAccount {
         smtp_security,
         smtp_auth_type,
         smtp_enabled,
+        desktop_notifications_enabled,
         pop_host,
         pop_port,
         pop_security,
@@ -286,6 +292,7 @@ export function createAccount(input: AccountCreateInput): MailAccount {
         :smtpSecurity,
         :smtpAuthType,
         :smtpEnabled,
+        :desktopNotificationsEnabled,
         :popHost,
         :popPort,
         :popSecurity,
@@ -319,6 +326,10 @@ export function createAccount(input: AccountCreateInput): MailAccount {
       smtpSecurity: toNullableParam(smtpSettings.smtpSecurity),
       smtpAuthType: toNullableParam(smtpSettings.smtpAuthType),
       smtpEnabled: smtpSettings.smtpEnabled ? 1 : 0,
+      desktopNotificationsEnabled:
+        (input.desktopNotificationsEnabled ?? getSettings().defaultDesktopNotificationsEnabled)
+          ? 1
+          : 0,
       popHost: toNullableParam(input.popHost),
       popPort: toNullableParam(input.popPort),
       popSecurity: toNullableParam(input.popSecurity),
@@ -392,6 +403,7 @@ export function updateAccount(input: AccountUpdateInput): MailAccount {
         smtp_security = :smtpSecurity,
         smtp_auth_type = :smtpAuthType,
         smtp_enabled = :smtpEnabled,
+        desktop_notifications_enabled = :desktopNotificationsEnabled,
         pop_host = :popHost,
         pop_port = :popPort,
         pop_security = :popSecurity,
@@ -425,6 +437,8 @@ export function updateAccount(input: AccountUpdateInput): MailAccount {
       smtpSecurity: toNullableParam(input.smtpSecurity ?? current.smtpSecurity),
       smtpAuthType: toNullableParam(input.smtpAuthType ?? current.smtpAuthType),
       smtpEnabled: (input.smtpEnabled ?? current.smtpEnabled) ? 1 : 0,
+      desktopNotificationsEnabled:
+        (input.desktopNotificationsEnabled ?? current.desktopNotificationsEnabled) ? 1 : 0,
       popHost: toNullableParam(input.popHost ?? current.popHost),
       popPort: toNullableParam(input.popPort ?? current.popPort),
       popSecurity: toNullableParam(input.popSecurity ?? current.popSecurity),
@@ -444,6 +458,21 @@ export function updateAccount(input: AccountUpdateInput): MailAccount {
   }
 
   return updated
+}
+
+export function setAccountNotifications({
+  accountIds,
+  enabled
+}: AccountNotificationsInput): MailAccount[] {
+  const ids = normalizeAccountIds(accountIds)
+  getDatabase()
+    .prepare(
+      `UPDATE onemail_mail_accounts
+     SET desktop_notifications_enabled = :enabled, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     WHERE account_id IN (SELECT value FROM json_each(:accountIds))`
+    )
+    .run({ enabled: enabled ? 1 : 0, accountIds: JSON.stringify(ids) })
+  return listAccounts()
 }
 
 export function disableAccount(accountId: number): MailAccount {
@@ -574,6 +603,7 @@ function mapAccountRow(row: AccountRow): MailAccount {
     smtpSecurity: row.smtp_security ?? undefined,
     smtpAuthType: row.smtp_auth_type ?? undefined,
     smtpEnabled: toBoolean(row.smtp_enabled),
+    desktopNotificationsEnabled: toBoolean(row.desktop_notifications_enabled),
     popHost: toOptionalString(row.pop_host),
     popPort: row.pop_port === null ? undefined : toNumber(row.pop_port),
     popSecurity: row.pop_security ?? undefined,

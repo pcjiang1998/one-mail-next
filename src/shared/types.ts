@@ -47,6 +47,7 @@ export type MailAccount = {
   syncMode: AccountSyncMode
   accountSyncIntervalMinutes: number
   syncEnabled: boolean
+  desktopNotificationsEnabled: boolean
   credentialState: CredentialState
   status: AccountStatus
   lastSyncAt?: string
@@ -81,6 +82,7 @@ export type AccountCreateInput = {
   syncMode?: AccountSyncMode
   accountSyncIntervalMinutes?: number
   remoteDeletePolicy?: RemoteDeletePolicy
+  desktopNotificationsEnabled?: boolean
 }
 
 export type AccountCreatedEvent = {
@@ -454,11 +456,16 @@ export type AppColorTheme =
 
 export type UpdateCheckFrequency = 'manual' | 'daily' | 'weekly'
 
+export type PrivacyMode = 'unrestricted' | 'loose' | 'strict'
+export type AccountPrivacyMode = 'inherit' | PrivacyMode
+
 export type AppSettings = {
   syncIntervalMinutes: number
   syncWindowDays: number
   openAtLogin: boolean
+  defaultDesktopNotificationsEnabled: boolean
   externalImagesBlocked: boolean
+  privacyDefaultMode?: PrivacyMode
   locale: string
   theme: AppColorTheme
   updateCheckFrequency: UpdateCheckFrequency
@@ -569,6 +576,15 @@ export type CacheCleanupResult = {
 }
 
 export type BackupSyncProvider = 'none' | 'webdav' | 's3'
+
+export type BackupExportOptions = {
+  includeMail: boolean
+}
+
+export type AccountNotificationsInput = {
+  accountIds: number[]
+  enabled: boolean
+}
 
 export type BackupSyncSettings =
   | {
@@ -689,6 +705,169 @@ export type AppUpdateStatus = {
   updatedAt: string
 }
 
+export type WritebackOperationKind =
+  | 'mark_read'
+  | 'mark_unread'
+  | 'move_to_trash'
+  | 'restore'
+  | 'mark_answered'
+  | 'append_sent'
+  | 'permanent_delete'
+  | 'smtp_send'
+  | 'rule_action'
+
+export type WritebackOperationStatus = 'queued' | 'running' | 'success' | 'failed' | 'cancelled'
+
+export type RemoteWriteback = {
+  writebackId: number
+  accountId: number
+  accountEmail?: string
+  messageId?: number
+  operationKind: WritebackOperationKind
+  status: WritebackOperationStatus
+  messageSubject?: string
+  messageSender?: string
+  errorMessage?: string
+  attemptCount: number
+  createdAt: string
+  startedAt?: string
+  finishedAt?: string
+}
+
+export type WritebackStatus = {
+  queuedCount: number
+  runningCount: number
+  failedCount: number
+  successCount: number
+  items: RemoteWriteback[]
+}
+
+export type MailRuleField = 'recipient' | 'sender' | 'subject' | 'body' | 'has_attachment'
+export type MailRuleOperator = 'contains' | 'not_contains' | 'equals' | 'starts_with' | 'ends_with'
+export type MailRuleConnector = 'and' | 'or'
+
+export type MailRuleCondition = {
+  field: MailRuleField
+  operator: MailRuleOperator
+  value: string
+  connector?: MailRuleConnector
+}
+
+export type MailRuleAction =
+  | { type: 'mark_read' }
+  | { type: 'add_to_board'; note?: string; reminderMinutes?: number[] }
+  | { type: 'move_to_trash' }
+
+export type MailRule = {
+  ruleId: number
+  name: string
+  accountId?: number
+  enabled: boolean
+  sortOrder: number
+  conditions: MailRuleCondition[]
+  actions: MailRuleAction[]
+  createdAt: string
+  updatedAt: string
+}
+
+export type MailRuleInput = Omit<MailRule, 'ruleId' | 'createdAt' | 'updatedAt'> & {
+  ruleId?: number
+}
+
+export type PrivacyTrustedSender = {
+  trustedSenderId: number
+  accountId: number
+  matchType: 'email' | 'domain'
+  matchValue: string
+}
+
+export type AccountPrivacyPolicy = {
+  accountId: number
+  mode: AccountPrivacyMode
+  resolvedMode: PrivacyMode
+  trustedSenders: PrivacyTrustedSender[]
+}
+
+export type PrivacyPolicyUpdateInput = {
+  accountId: number
+  mode: AccountPrivacyMode
+}
+
+export type PrivacyTrustedSenderInput = {
+  accountId: number
+  matchType: 'email' | 'domain'
+  matchValue: string
+}
+
+export type ContactEmail = {
+  contactEmailId?: number
+  email: string
+  label?: string
+  isDefault: boolean
+}
+
+export type Contact = {
+  contactId: number
+  displayName: string
+  note: string
+  isStarred: boolean
+  emails: ContactEmail[]
+  createdAt: string
+  updatedAt: string
+}
+
+export type ContactInput = {
+  contactId?: number
+  displayName: string
+  note?: string
+  isStarred?: boolean
+  emails: ContactEmail[]
+}
+
+export type BoardTaskStatus = 'todo' | 'in_progress' | 'completed' | 'cancelled'
+
+export type TaskReminder = {
+  reminderId?: number
+  fireAt: string
+  status: 'pending' | 'fired' | 'cancelled'
+  firedAt?: string
+}
+
+export type BoardTask = {
+  taskId: number
+  accountId: number
+  accountEmail?: string
+  messageId?: number
+  status: BoardTaskStatus
+  note: string
+  subjectSnapshot: string
+  senderSnapshot: string
+  createdAt: string
+  updatedAt: string
+  completedAt?: string
+  reminders: TaskReminder[]
+}
+
+export type CreateBoardTaskInput = {
+  accountId: number
+  messageId: number
+  note?: string
+  reminders?: Array<{ fireAt: string }>
+}
+
+export type BoardTaskStatusUpdate = {
+  taskIds: number[]
+  status: BoardTaskStatus
+}
+
+export type VCardImportResult = {
+  imported: number
+  merged: number
+  skipped?: number
+  canceled?: boolean
+  contacts: Contact[]
+}
+
 export type OneMailApi = {
   accounts: {
     list: () => Promise<MailAccount[]>
@@ -697,6 +876,7 @@ export type OneMailApi = {
     openAddWindow: () => Promise<boolean>
     closeAddWindow: () => Promise<boolean>
     update: (input: AccountUpdateInput) => Promise<MailAccount>
+    setNotifications: (input: AccountNotificationsInput) => Promise<MailAccount[]>
     discoverFolders: (accountId: number) => Promise<AccountMailFolder[]>
     reauthorize: (accountId: number) => Promise<MailAccount>
     disable: (accountId: number) => Promise<MailAccount>
@@ -720,6 +900,14 @@ export type OneMailApi = {
     bulkDelete: (input: MessageBulkDeleteInput) => Promise<MessageBulkDeleteResult>
     hideLocal: (messageId: number) => Promise<MessageDeleteResult>
     restore: (messageId: number) => Promise<MessageRestoreResult>
+  }
+  writeback: {
+    list: () => Promise<RemoteWriteback[]>
+    status: () => Promise<WritebackStatus>
+    clear: (writebackId: number) => Promise<boolean>
+    clearCompleted: () => Promise<number>
+    retry: (writebackId: number) => Promise<boolean>
+    onChanged: (callback: (status: WritebackStatus) => void) => () => void
   }
   compose: {
     createNewDraft: (accountId: number) => Promise<ComposeDraft>
@@ -755,13 +943,13 @@ export type OneMailApi = {
     getBackupSync: () => Promise<BackupSyncSettings>
     updateBackupSync: (input: BackupSyncSettings) => Promise<BackupSyncSettings>
     testBackupSync: (input: BackupSyncSettings) => Promise<BackupSyncTestResult>
-    uploadBackupSync: () => Promise<BackupSyncTransferResult>
+    uploadBackupSync: (options?: BackupExportOptions) => Promise<BackupSyncTransferResult>
     downloadBackupSync: (operationId?: string) => Promise<BackupSyncDownloadResult>
     importBackupFromRemote: (
       input: BackupSyncSettings,
       operationId?: string
     ) => Promise<BackupSyncDownloadResult>
-    exportSql: () => Promise<string | null>
+    exportSql: (options?: BackupExportOptions) => Promise<string | null>
     importSql: (operationId?: string) => Promise<BackupImportResult>
     onBackupImportProgress: (callback: (progress: BackupImportProgress) => void) => () => void
   }
@@ -769,6 +957,34 @@ export type OneMailApi = {
     getSettings: () => Promise<TranslationSettings>
     updateSettings: (input: TranslationSettings) => Promise<TranslationSettings>
     translate: (input: TranslationRequest) => Promise<TranslationResult>
+  }
+  privacy: {
+    list: () => Promise<AccountPrivacyPolicy[]>
+    update: (input: PrivacyPolicyUpdateInput) => Promise<AccountPrivacyPolicy>
+    addTrustedSender: (input: PrivacyTrustedSenderInput) => Promise<PrivacyTrustedSender>
+    removeTrustedSender: (trustedSenderId: number) => Promise<boolean>
+    clearCache: (accountId?: number) => Promise<number>
+  }
+  contacts: {
+    list: (search?: string) => Promise<Contact[]>
+    save: (input: ContactInput) => Promise<Contact>
+    delete: (contactId: number) => Promise<boolean>
+    importVCard: () => Promise<VCardImportResult>
+    exportVCard: (contactIds?: number[]) => Promise<string | null>
+  }
+  tasks: {
+    list: () => Promise<BoardTask[]>
+    createFromMessage: (input: CreateBoardTaskInput) => Promise<BoardTask>
+    updateStatus: (input: BoardTaskStatusUpdate) => Promise<BoardTask[]>
+    delete: (taskIds: number[]) => Promise<number>
+    onChanged: (callback: (tasks: BoardTask[]) => void) => () => void
+  }
+  rules: {
+    list: () => Promise<MailRule[]>
+    save: (input: MailRuleInput) => Promise<MailRule>
+    delete: (ruleId: number) => Promise<boolean>
+    reorder: (ruleIds: number[]) => Promise<MailRule[]>
+    setEnabled: (ruleId: number, enabled: boolean) => Promise<MailRule>
   }
   updates: {
     check: () => Promise<AppUpdateCheckResult>

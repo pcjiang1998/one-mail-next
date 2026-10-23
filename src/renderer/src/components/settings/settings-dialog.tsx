@@ -1,5 +1,8 @@
 import { zodResolver } from '@hookform/resolvers/zod'
 import {
+  ArrowLeft,
+  Bell,
+  ListFilter,
   BadgeInfo,
   CalendarRange,
   Clock3,
@@ -51,7 +54,11 @@ import {
 } from '@renderer/components/settings/settings-advanced-sections'
 import { AccountManagementSettings } from '@renderer/components/settings/account-management-settings'
 import { TranslationSettings } from '@renderer/components/settings/translation-settings'
-import { ResponsiveDialog } from '@renderer/components/responsive-dialog'
+import { Dialog, DialogContent, DialogTitle } from '@renderer/components/ui/dialog'
+import { PrivacySettings } from './privacy-settings'
+import { MailRulesSettings } from './mail-rules-settings'
+import { NotificationSettings } from './notification-settings'
+import { Checkbox } from '@renderer/components/ui/checkbox'
 import { Button } from '@renderer/components/ui/button'
 import {
   Field,
@@ -107,11 +114,14 @@ type SettingsDialogProps = {
   onReorderAccounts: (accountIds: number[]) => Promise<void>
 }
 
-type SettingsSection =
+export type SettingsSection =
   | 'accounts'
+  | 'notifications'
   | 'general'
   | 'signatures'
   | 'network'
+  | 'privacy'
+  | 'rules'
   | 'sync'
   | 'translation'
   | 'backup'
@@ -135,7 +145,7 @@ type SettingsFormValues = {
   syncIntervalMinutes: number
   syncWindowDays: number
   openAtLogin: boolean
-  externalImagesBlocked: boolean
+  defaultDesktopNotificationsEnabled: boolean
   locale: 'zh-CN' | 'en-US'
   theme: AppColorTheme
   updateCheckFrequency: UpdateCheckFrequency
@@ -161,6 +171,7 @@ const sections: Array<{
     labelKey: 'settings.sync',
     icon: Clock3
   },
+  { value: 'notifications', labelKey: 'settings.notifications', icon: Bell },
   {
     value: 'signatures',
     labelKey: 'settings.signatures',
@@ -171,6 +182,8 @@ const sections: Array<{
     labelKey: 'settings.network',
     icon: Network
   },
+  { value: 'privacy', labelKey: 'settings.privacy', icon: ShieldCheck },
+  { value: 'rules', labelKey: 'settings.rules', icon: ListFilter },
   {
     value: 'translation',
     labelKey: 'settings.translation',
@@ -208,6 +221,7 @@ export function SettingsDialog({
   const [section, setSection] = React.useState<SettingsSection>('general')
   const [pending, setPending] = React.useState(false)
   const [backupPending, setBackupPending] = React.useState<BackupPending>(null)
+  const [includeMail, setIncludeMail] = React.useState(true)
   const [backupImportDialogOpen, setBackupImportDialogOpen] = React.useState(false)
   const [backupImportDefaultSource, setBackupImportDefaultSource] =
     React.useState<BackupImportDialogSource>('sql')
@@ -254,7 +268,7 @@ export function SettingsDialog({
             syncIntervalMinutes: currentValues.syncIntervalMinutes,
             syncWindowDays: currentValues.syncWindowDays,
             openAtLogin: currentValues.openAtLogin,
-            externalImagesBlocked: currentValues.externalImagesBlocked,
+            defaultDesktopNotificationsEnabled: currentValues.defaultDesktopNotificationsEnabled,
             locale: currentValues.locale,
             theme: currentValues.theme,
             updateCheckFrequency: currentValues.updateCheckFrequency
@@ -295,6 +309,7 @@ export function SettingsDialog({
       wasOpenRef.current = false
       return
     }
+    if (!settings) return
     if (wasOpenRef.current) return
 
     const nextValues = toFormValues(settings)
@@ -326,7 +341,7 @@ export function SettingsDialog({
   }, [open, section, t])
 
   React.useEffect(() => {
-    if (!open) return
+    if (!open || !settings) return
 
     if (autoSaveTimerRef.current) {
       window.clearTimeout(autoSaveTimerRef.current)
@@ -348,7 +363,7 @@ export function SettingsDialog({
         autoSaveTimerRef.current = null
       }
     }
-  }, [open, saveSettingsValues, settingsSchema, watchedValues])
+  }, [open, settings, saveSettingsValues, settingsSchema, watchedValues])
 
   React.useEffect(() => {
     return () => {
@@ -374,7 +389,7 @@ export function SettingsDialog({
 
   async function handleExport(): Promise<void> {
     await runBackupAction('export', async () => {
-      const path = await exportSqlBackup()
+      const path = await exportSqlBackup({ includeMail })
       setBackupMessage(
         path
           ? { label: t('settings.backup.exported'), path }
@@ -407,7 +422,7 @@ export function SettingsDialog({
 
   async function handleUploadBackupSync(): Promise<void> {
     await runBackupAction('uploadRemote', async () => {
-      const result = await uploadBackupSync()
+      const result = await uploadBackupSync({ includeMail })
       setBackupMessage({
         label: t('settings.backup.remoteUploaded'),
         path: result.remotePath
@@ -470,103 +485,127 @@ export function SettingsDialog({
 
   return (
     <>
-      <ResponsiveDialog
-        open={open}
-        onOpenChange={handleOpenChange}
-        title={t('settings.title')}
-        contentClassName="h-[min(680px,90vh)] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden p-0 sm:max-w-4xl"
-        headerClassName="shrink-0 border-b px-4 py-3 pr-12 [&_[data-slot=dialog-title]]:text-sm! [&_[data-slot=drawer-title]]:text-sm!"
-        bodyClassName="h-full min-h-0 overflow-hidden"
-      >
-        <div className="grid h-full min-h-0 grid-cols-1 grid-rows-[auto_minmax(0,1fr)] overflow-hidden md:grid-cols-[156px_minmax(0,1fr)] md:grid-rows-1">
-          <nav className="min-h-0 shrink-0 border-b bg-muted/30 p-1.5 md:border-r md:border-b-0 md:p-2">
-            <div className="flex gap-1 overflow-x-auto md:flex-col md:overflow-visible">
-              {sections.map((item) => {
-                const Icon = item.icon
-                const active = section === item.value
+      <Dialog open={open} onOpenChange={handleOpenChange}>
+        <DialogContent
+          showCloseButton={false}
+          aria-describedby={undefined}
+          className="left-0 top-0 flex h-dvh w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none border-0 p-0 shadow-none"
+        >
+          <header className="app-titlebar app-drag-region flex h-12 shrink-0 items-center gap-3 border-b bg-background">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="app-no-drag"
+              disabled={pending || Boolean(backupPending)}
+              onClick={() => handleOpenChange(false)}
+            >
+              <ArrowLeft aria-hidden="true" />
+              {t('settings.backToMailbox')}
+            </Button>
+            <DialogTitle className="text-sm">{t('settings.title')}</DialogTitle>
+          </header>
+          <div className="grid min-h-0 w-full flex-1 grid-cols-[180px_minmax(0,1fr)] overflow-hidden lg:grid-cols-[220px_minmax(0,1fr)]">
+            <nav
+              aria-label={t('settings.navigation')}
+              className="min-h-0 overflow-y-auto border-r bg-muted/30 p-3"
+            >
+              <div className="flex flex-col gap-1">
+                {sections.map((item) => {
+                  const Icon = item.icon
+                  const active = section === item.value
 
-                return (
-                  <button
-                    key={item.value}
-                    type="button"
-                    className={cn(
-                      'flex h-8 min-w-24 flex-none items-center gap-1.5 rounded-md px-2 text-left text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring md:w-full [&_svg]:size-3.5',
-                      active
-                        ? 'bg-background text-foreground shadow-xs'
-                        : 'text-muted-foreground hover:bg-background/70 hover:text-foreground'
-                    )}
-                    onClick={() => setSection(item.value)}
-                  >
-                    <Icon className="shrink-0" aria-hidden="true" />
-                    <span className="min-w-0 truncate font-medium">{t(item.labelKey)}</span>
-                  </button>
-                )
-              })}
+                  return (
+                    <button
+                      key={item.value}
+                      type="button"
+                      className={cn(
+                        'flex h-10 w-full flex-none items-center gap-2 rounded-md px-3 text-left text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-4',
+                        active
+                          ? 'bg-background text-foreground shadow-xs'
+                          : 'text-muted-foreground hover:bg-background/70 hover:text-foreground'
+                      )}
+                      aria-current={active ? 'page' : undefined}
+                      onClick={() => setSection(item.value)}
+                    >
+                      <Icon className="shrink-0" aria-hidden="true" />
+                      <span className="min-w-0 truncate font-medium">{t(item.labelKey)}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            </nav>
+
+            <div className="h-full min-h-0 overflow-auto">
+              {section === 'accounts' ? (
+                <AccountManagementSettings
+                  accounts={accounts}
+                  defaultComposeAccountId={settings?.defaultComposeAccountId ?? null}
+                  onDefaultComposeAccountChange={(accountId) =>
+                    onSubmit({ defaultComposeAccountId: accountId })
+                  }
+                  onRemoveAccounts={onRemoveAccounts}
+                  onReorderAccounts={onReorderAccounts}
+                />
+              ) : section === 'general' ? (
+                <GeneralSettingsForm form={form} error={error} systemInfo={systemInfo} />
+              ) : section === 'signatures' ? (
+                <SignatureSettings
+                  settings={settings}
+                  accounts={accounts}
+                  onSubmit={onSubmit}
+                  onUpdateAccount={onUpdateAccount}
+                  onRefreshAccounts={onRefreshAccounts}
+                />
+              ) : section === 'network' ? (
+                <NetworkSettings
+                  settings={settings}
+                  accounts={accounts}
+                  onSubmit={onSubmit}
+                  onUpdateAccount={onUpdateAccount}
+                />
+              ) : section === 'sync' ? (
+                <SyncSettings
+                  settings={settings}
+                  accounts={accounts}
+                  onSubmit={onSubmit}
+                  onUpdateAccount={onUpdateAccount}
+                />
+              ) : section === 'notifications' ? (
+                <NotificationSettings accounts={accounts} onRefreshAccounts={onRefreshAccounts} />
+              ) : section === 'privacy' ? (
+                <PrivacySettings onUpdateSettings={onSubmit} />
+              ) : section === 'rules' ? (
+                <MailRulesSettings />
+              ) : section === 'translation' ? (
+                <TranslationSettings />
+              ) : section === 'backup' ? (
+                <BackupSettings
+                  key={getBackupSyncSettingsKey(backupSyncSettings)}
+                  pending={backupPending}
+                  message={backupMessage}
+                  error={backupError}
+                  syncSettings={backupSyncSettings}
+                  includeMail={includeMail}
+                  onIncludeMailChange={setIncludeMail}
+                  onExport={handleExport}
+                  onImport={handleImport}
+                  onSaveSync={handleSaveBackupSync}
+                  onTestSync={handleTestBackupSync}
+                  onUploadSync={handleUploadBackupSync}
+                  onDownloadSync={handleDownloadBackupSync}
+                />
+              ) : (
+                <AboutSettings
+                  form={form}
+                  error={error}
+                  systemInfo={systemInfo}
+                  updateStatus={updateStatus}
+                />
+              )}
             </div>
-          </nav>
-
-          <div className="h-full min-h-0 overflow-auto">
-            {section === 'accounts' ? (
-              <AccountManagementSettings
-                accounts={accounts}
-                defaultComposeAccountId={settings?.defaultComposeAccountId ?? null}
-                onDefaultComposeAccountChange={(accountId) =>
-                  onSubmit({ defaultComposeAccountId: accountId })
-                }
-                onRemoveAccounts={onRemoveAccounts}
-                onReorderAccounts={onReorderAccounts}
-              />
-            ) : section === 'general' ? (
-              <GeneralSettingsForm form={form} error={error} systemInfo={systemInfo} />
-            ) : section === 'signatures' ? (
-              <SignatureSettings
-                settings={settings}
-                accounts={accounts}
-                onSubmit={onSubmit}
-                onUpdateAccount={onUpdateAccount}
-                onRefreshAccounts={onRefreshAccounts}
-              />
-            ) : section === 'network' ? (
-              <NetworkSettings
-                settings={settings}
-                accounts={accounts}
-                onSubmit={onSubmit}
-                onUpdateAccount={onUpdateAccount}
-              />
-            ) : section === 'sync' ? (
-              <SyncSettings
-                settings={settings}
-                accounts={accounts}
-                onSubmit={onSubmit}
-                onUpdateAccount={onUpdateAccount}
-              />
-            ) : section === 'translation' ? (
-              <TranslationSettings />
-            ) : section === 'backup' ? (
-              <BackupSettings
-                key={getBackupSyncSettingsKey(backupSyncSettings)}
-                pending={backupPending}
-                message={backupMessage}
-                error={backupError}
-                syncSettings={backupSyncSettings}
-                onExport={handleExport}
-                onImport={handleImport}
-                onSaveSync={handleSaveBackupSync}
-                onTestSync={handleTestBackupSync}
-                onUploadSync={handleUploadBackupSync}
-                onDownloadSync={handleDownloadBackupSync}
-              />
-            ) : (
-              <AboutSettings
-                form={form}
-                error={error}
-                systemInfo={systemInfo}
-                updateStatus={updateStatus}
-              />
-            )}
           </div>
-        </div>
-      </ResponsiveDialog>
+        </DialogContent>
+      </Dialog>
 
       <BackupImportDialog
         open={backupImportDialogOpen}
@@ -595,7 +634,7 @@ function GeneralSettingsForm({
   const { t } = useI18n()
 
   return (
-    <div className="mx-auto flex min-h-full w-full max-w-[540px] flex-col gap-3 p-3 sm:p-4">
+    <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col gap-3 p-3 sm:p-4">
       <FieldGroup className="gap-2.5">
         <Controller
           control={form.control}
@@ -682,16 +721,16 @@ function GeneralSettingsForm({
 
         <Controller
           control={form.control}
-          name="externalImagesBlocked"
+          name="defaultDesktopNotificationsEnabled"
           render={({ field }) => (
             <SettingRow
-              icon={ShieldCheck}
-              title={t('settings.externalContent.title')}
-              description={t('settings.externalContent.description')}
+              icon={Bell}
+              title={t('settings.notifications.title')}
+              description={t('settings.notifications.description')}
               control={
                 <Switch
-                  id="external-images-blocked"
-                  size="sm"
+                  id="default-desktop-notifications"
+                  aria-label={t('settings.notifications.title')}
                   checked={field.value}
                   onCheckedChange={field.onChange}
                 />
@@ -759,11 +798,13 @@ function GeneralSettingsForm({
   )
 }
 
-function BackupSettings({
+export function BackupSettings({
   pending,
   message,
   error,
   syncSettings,
+  includeMail,
+  onIncludeMailChange,
   onExport,
   onImport,
   onSaveSync,
@@ -775,6 +816,8 @@ function BackupSettings({
   message: BackupMessage | null
   error: string | null
   syncSettings: BackupSyncSettings | null
+  includeMail: boolean
+  onIncludeMailChange: (includeMail: boolean) => void
   onExport: () => Promise<void>
   onImport: () => void
   onSaveSync: (input: BackupSyncSettings) => Promise<void>
@@ -790,7 +833,7 @@ function BackupSettings({
   const remoteConfigured = Boolean(syncSettings && syncSettings.provider !== 'none')
 
   return (
-    <div className="mx-auto flex min-h-full w-full max-w-[540px] flex-col gap-3 p-3 sm:p-4">
+    <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col gap-3 p-3 sm:p-4">
       <FieldGroup className="gap-2.5">
         <Alert className="bg-muted/30 py-2 text-xs">
           <KeyRound />
@@ -799,6 +842,30 @@ function BackupSettings({
             {t('settings.backup.securityDescription')}
           </AlertDescription>
         </Alert>
+
+        <div className="rounded-md border p-3">
+          <label
+            className="flex items-center gap-2 text-sm font-medium"
+            htmlFor="backup-include-mail"
+          >
+            <Checkbox
+              id="backup-include-mail"
+              checked={includeMail}
+              disabled={disabled}
+              onCheckedChange={(checked) => onIncludeMailChange(checked === true)}
+            />
+            {t('settings.backup.includeMail')}
+          </label>
+          <p className="mt-2 text-xs text-muted-foreground">
+            {t('settings.backup.scopeDescription')}
+          </p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            {t('settings.backup.restoreDescription')}
+          </p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            {t('settings.backup.attachmentDescription')}
+          </p>
+        </div>
 
         <div className="grid gap-2 sm:grid-cols-2">
           <BackupActionButton
@@ -933,7 +1000,7 @@ function AboutSettings({
         : undefined
 
   return (
-    <div className="mx-auto flex min-h-full w-full max-w-[540px] flex-col gap-3 p-3 sm:p-4">
+    <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col gap-3 p-3 sm:p-4">
       <FieldGroup className="gap-2.5">
         <SettingRow
           icon={BadgeInfo}
@@ -1244,7 +1311,7 @@ function createSettingsSchema(t: (key: TranslationKey) => string) {
       .min(0, t('settings.syncWindow.errorMin'))
       .max(3650, t('settings.syncWindow.errorMax')),
     openAtLogin: z.boolean(),
-    externalImagesBlocked: z.boolean(),
+    defaultDesktopNotificationsEnabled: z.boolean(),
     locale: z.enum(['zh-CN', 'en-US']),
     theme: z.enum(APP_COLOR_THEMES),
     updateCheckFrequency: z.enum(['manual', 'daily', 'weekly'])
@@ -1256,7 +1323,7 @@ function toFormValues(settings: AppSettings | null): SettingsFormValues {
     syncIntervalMinutes: settings?.syncIntervalMinutes ?? 15,
     syncWindowDays: settings?.syncWindowDays ?? 90,
     openAtLogin: settings?.openAtLogin === true,
-    externalImagesBlocked: settings?.externalImagesBlocked !== false,
+    defaultDesktopNotificationsEnabled: settings?.defaultDesktopNotificationsEnabled !== false,
     locale: settings?.locale === 'en-US' ? 'en-US' : 'zh-CN',
     theme: settings?.theme ?? 'light',
     updateCheckFrequency: settings?.updateCheckFrequency ?? 'daily'
@@ -1268,7 +1335,7 @@ function areSettingsEqual(first: SettingsFormValues, second: SettingsFormValues)
     first.syncIntervalMinutes === second.syncIntervalMinutes &&
     first.syncWindowDays === second.syncWindowDays &&
     first.openAtLogin === second.openAtLogin &&
-    first.externalImagesBlocked === second.externalImagesBlocked &&
+    first.defaultDesktopNotificationsEnabled === second.defaultDesktopNotificationsEnabled &&
     first.locale === second.locale &&
     first.theme === second.theme &&
     first.updateCheckFrequency === second.updateCheckFrequency

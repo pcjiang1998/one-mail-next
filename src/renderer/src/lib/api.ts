@@ -9,6 +9,7 @@ import type {
   AppUpdateCheckResult,
   AppUpdateStatus,
   BackupImportProgress,
+  BackupExportOptions,
   BackupSyncDownloadResult,
   BackupSyncSettings,
   BackupSyncTestResult,
@@ -295,8 +296,8 @@ export async function cleanupMailCache(days: number): Promise<CacheCleanupResult
   return window.api.settings.cleanupCache(days)
 }
 
-export async function exportSqlBackup(): Promise<string | null> {
-  return window.api.settings.exportSql()
+export async function exportSqlBackup(options?: BackupExportOptions): Promise<string | null> {
+  return window.api.settings.exportSql(options)
 }
 
 export async function importSqlBackup(operationId?: string): Promise<BackupImportResult> {
@@ -319,8 +320,10 @@ export async function testBackupSyncSettings(
   return window.api.settings.testBackupSync(input)
 }
 
-export async function uploadBackupSync(): Promise<BackupSyncTransferResult> {
-  return window.api.settings.uploadBackupSync()
+export async function uploadBackupSync(
+  options?: BackupExportOptions
+): Promise<BackupSyncTransferResult> {
+  return window.api.settings.uploadBackupSync(options)
 }
 
 export async function downloadBackupSync(operationId?: string): Promise<BackupSyncDownloadResult> {
@@ -616,6 +619,7 @@ function toAccountList(accounts: MailAccount[], accountStats: AccountMailboxStat
       smtpPort: account.smtpPort,
       smtpSecurity: account.smtpSecurity,
       smtpEnabled: account.smtpEnabled,
+      desktopNotificationsEnabled: account.desktopNotificationsEnabled,
       popHost: account.popHost,
       popPort: account.popPort,
       popSecurity: account.popSecurity,

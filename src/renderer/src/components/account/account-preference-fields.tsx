@@ -1,5 +1,6 @@
 import type * as React from 'react'
 import { Controller, type UseFormReturn } from 'react-hook-form'
+import { Checkbox } from '@renderer/components/ui/checkbox'
 import { Input } from '@renderer/components/ui/input'
 import { RadioGroup, RadioGroupItem } from '@renderer/components/ui/radio-group'
 import {
@@ -26,6 +27,22 @@ export function AccountPreferenceFields({
 
   return (
     <>
+      <AccountFormField
+        id="account-desktop-notifications"
+        label={t('account.form.desktopNotifications')}
+      >
+        <Controller
+          control={form.control}
+          name="desktopNotificationsEnabled"
+          render={({ field }) => (
+            <Checkbox
+              id="account-desktop-notifications"
+              checked={field.value}
+              onCheckedChange={(checked) => field.onChange(checked === true)}
+            />
+          )}
+        />
+      </AccountFormField>
       <AccountFormField
         id="account-proxy-mode"
         label={t('account.form.proxy')}

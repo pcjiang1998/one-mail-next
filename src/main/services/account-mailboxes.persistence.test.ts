@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
 
 const electronMock = vi.hoisted(() => ({
   app: {
+    getLoginItemSettings: vi.fn(() => ({ openAtLogin: false })),
     getPath: vi.fn(() => tmpdir())
   }
 }))

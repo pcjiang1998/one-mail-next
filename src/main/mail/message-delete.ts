@@ -1,7 +1,13 @@
 import { getAccount } from '../db/repositories/account.repository'
 import {
+  getRemoteMessageIdentity,
+  type RemoteMessageIdentity
+} from '../db/repositories/remote-writeback.repository'
+import { requireUidExpunge, selectAndVerifyRemoteMessage } from '../services/remote-writeback-imap'
+import {
   getMessageDeleteTarget,
   markMessageDeleteError,
+  markMessageMovedToTrash,
   markMessageRemoteDeleted,
   restoreMessageLocally,
   markMessageUserHidden,
@@ -10,6 +16,12 @@ import {
 import { authenticateImapSession } from './imap-auth'
 import { SimpleImapSession } from './imap-session'
 import { detectSpecialFolderRole, findFolderByRole } from './special-folders'
+import {
+  markRemoteWritebackFailed,
+  markRemoteWritebackRunning,
+  markRemoteWritebackSuccess,
+  queueRemoteWriteback
+} from '../services/remote-writeback.service'
 
 export type MessageDeleteResult = {
   messageId: number
@@ -53,16 +65,41 @@ export async function permanentlyDeleteMessage(messageId: number): Promise<Messa
     }
   }
 
-  const client = await SimpleImapSession.connect(account, 'P')
+  const identity = getRemoteMessageIdentity(messageId)
+  if (!identity) throw new Error('邮件远端定位信息已失效，请先同步邮件。')
+  assertTargetIdentity(target, identity)
 
+  const writeback = queueRemoteWriteback({
+    accountId: target.accountId,
+    messageId,
+    operationKind: 'permanent_delete',
+    payload: { permanent: true, folderPath: target.folderPath, uid: target.uid }
+  })
+  if (!markRemoteWritebackRunning(writeback.writebackId)) throw new Error('无法启动远端写回。')
+
+  let client: SimpleImapSession | undefined
+  let remoteSucceeded = false
   try {
+    client = await SimpleImapSession.connect(account, 'P')
     await authenticateImapSession(account, client)
+    const expungeUid = requireUidExpunge(client, await client.capability())
     const location = await resolvePermanentDeleteLocation(client, target)
-    await client.selectMailbox(location.folderPath)
-    for (const uid of location.uids) {
-      await client.setDeletedFlag(uid, true)
-    }
-    await client.expunge()
+    await selectAndVerifyRemoteMessage(client, {
+      ...identity,
+      accountId: target.accountId,
+      folderId: target.folderId,
+      folderPath: location.folderPath,
+      uid: location.uid,
+      uidValidity:
+        location.folderPath === target.folderPath
+          ? getRemoteMessageIdentity(messageId)?.uidValidity
+          : undefined,
+      rfc822MessageId: target.rfc822MessageId
+    })
+    await client.setDeletedFlag(location.uid, true)
+    await expungeUid(location.uid)
+    remoteSucceeded = true
+    markRemoteWritebackSuccess(writeback.writebackId)
     markMessageRemoteDeleted(messageId)
 
     return {
@@ -72,10 +109,12 @@ export async function permanentlyDeleteMessage(messageId: number): Promise<Messa
       action: 'permanent_delete'
     }
   } catch (error) {
-    markMessageDeleteError(messageId, getErrorMessage(error))
+    const message = getErrorMessage(error)
+    markMessageDeleteError(messageId, message)
+    if (!remoteSucceeded) markRemoteWritebackFailed(writeback.writebackId, message)
     throw error
   } finally {
-    await client.logout().catch(() => undefined)
+    await client?.logout().catch(() => undefined)
   }
 }
 
@@ -92,9 +131,9 @@ export async function deleteMessageToTrash(messageId: number): Promise<MessageDe
 async function resolvePermanentDeleteLocation(
   client: SimpleImapSession,
   target: MessageDeleteTarget
-): Promise<{ folderPath: string; uids: number[] }> {
+): Promise<{ folderPath: string; uid: number }> {
   if (!target.userDeleted || isTrashTarget(target)) {
-    return { folderPath: target.folderPath, uids: [target.uid] }
+    return { folderPath: target.folderPath, uid: target.uid }
   }
 
   const trash = findFolderByRole(target.accountId, 'trash')
@@ -105,7 +144,9 @@ async function resolvePermanentDeleteLocation(
   await client.selectMailbox(trash.path)
   const uids = await client.searchByMessageId(target.rfc822MessageId)
   if (uids.length === 0) throw new Error('远端已删除邮件不存在，请同步该邮箱后重试。')
-  return { folderPath: trash.path, uids }
+  if (uids.length !== 1)
+    throw new Error('远端存在多封相同 Message-ID 的邮件，已停止永久删除以避免误删。')
+  return { folderPath: trash.path, uid: uids[0] }
 }
 
 export function hideMessageLocally(messageId: number): MessageDeleteResult {
@@ -162,21 +203,40 @@ export async function restoreMessage(messageId: number): Promise<MessageDeleteRe
     }
   }
 
-  const client = await SimpleImapSession.connect(account, 'R')
+  const identity = getRemoteMessageIdentity(messageId)
+  if (!identity) throw new Error('邮件远端定位信息已失效，请先同步邮件。')
+  assertTargetIdentity(target, identity)
 
+  const writeback = queueRemoteWriteback({
+    accountId: target.accountId,
+    messageId,
+    operationKind: 'restore',
+    payload: { folderPath: target.folderPath, uid: target.uid, targetFolder: inbox.path }
+  })
+  if (!markRemoteWritebackRunning(writeback.writebackId)) throw new Error('无法启动远端写回。')
+
+  let client: SimpleImapSession | undefined
+  let remoteSucceeded = false
   try {
+    client = await SimpleImapSession.connect(account, 'R')
     await authenticateImapSession(account, client)
     const capabilities = await client.capability().catch(() => new Set<string>())
-    await client.selectMailbox(target.folderPath)
+    await selectAndVerifyRemoteMessage(client, {
+      ...identity,
+      accountId: target.accountId,
+      folderId: target.folderId,
+      folderPath: target.folderPath,
+      uid: target.uid,
+      rfc822MessageId: target.rfc822MessageId
+    })
 
-    if (capabilities.has('MOVE')) {
-      await client.uidMove(target.uid, inbox.path)
-    } else {
-      await client.uidCopy(target.uid, inbox.path)
-      await client.setDeletedFlag(target.uid, true)
-      await client.expunge()
+    if (!capabilities.has('MOVE')) {
+      throw new Error('当前连接不支持安全的 UID MOVE，未执行恢复操作。')
     }
+    await client.uidMove(target.uid, inbox.path)
 
+    remoteSucceeded = true
+    markRemoteWritebackSuccess(writeback.writebackId)
     restoreMessageLocally(messageId)
     return {
       messageId,
@@ -186,10 +246,12 @@ export async function restoreMessage(messageId: number): Promise<MessageDeleteRe
       localOnly: false
     }
   } catch (error) {
-    markMessageDeleteError(messageId, getErrorMessage(error))
+    const message = getErrorMessage(error)
+    markMessageDeleteError(messageId, message)
+    if (!remoteSucceeded) markRemoteWritebackFailed(writeback.writebackId, message)
     throw error
   } finally {
-    await client.logout().catch(() => undefined)
+    await client?.logout().catch(() => undefined)
   }
 }
 
@@ -230,6 +292,69 @@ function requireRestoreTarget(messageId: number): MessageDeleteTarget {
 
 function isTrashTarget(target: MessageDeleteTarget): boolean {
   return target.folderRole === 'trash' || detectSpecialFolderRole(target.folderPath) === 'trash'
+}
+
+function assertTargetIdentity(target: MessageDeleteTarget, identity: RemoteMessageIdentity): void {
+  if (
+    identity.accountId !== target.accountId ||
+    identity.folderId !== target.folderId ||
+    identity.folderPath !== target.folderPath ||
+    identity.uid !== target.uid
+  ) {
+    throw new Error('邮件的位置或 UIDVALIDITY 已变化，已停止写回；请先同步邮件。')
+  }
+}
+
+/** Rule actions may call this explicitly; ordinary user delete keeps its existing local-hide semantics. */
+export async function moveMessageToTrash(messageId: number): Promise<MessageDeleteResult> {
+  const target = requireDeleteTarget(messageId)
+  const trash = findFolderByRole(target.accountId, 'trash')
+  if (!trash) throw new Error('未找到该账号的已删除邮件文件夹。')
+  const account = getAccount(target.accountId)
+  if (!account) throw new Error(`Account not found: ${target.accountId}`)
+  if (account.receiveProtocol === 'pop3') return hideMessageLocally(messageId)
+
+  const identity = getRemoteMessageIdentity(messageId)
+  if (!identity) throw new Error('邮件远端定位信息已失效，请先同步邮件。')
+  assertTargetIdentity(target, identity)
+
+  const writeback = queueRemoteWriteback({
+    accountId: target.accountId,
+    messageId,
+    operationKind: 'move_to_trash',
+    payload: { folderPath: target.folderPath, uid: target.uid, targetFolder: trash.path }
+  })
+  if (!markRemoteWritebackRunning(writeback.writebackId)) throw new Error('无法启动远端写回。')
+  let client: SimpleImapSession | undefined
+  let remoteSucceeded = false
+  try {
+    client = await SimpleImapSession.connect(account, 'M')
+    await authenticateImapSession(account, client)
+    await selectAndVerifyRemoteMessage(client, {
+      ...identity,
+      accountId: target.accountId,
+      folderId: target.folderId,
+      folderPath: target.folderPath,
+      uid: target.uid,
+      rfc822MessageId: target.rfc822MessageId
+    })
+    const capabilities = await client.capability().catch(() => new Set<string>())
+    if (!capabilities.has('MOVE')) {
+      throw new Error('当前连接不支持安全的 UID MOVE，未执行移入已删除文件夹。')
+    }
+    await client.selectMailbox(target.folderPath)
+    const destinationUid = await client.uidMove(target.uid, trash.path)
+    remoteSucceeded = true
+    markRemoteWritebackSuccess(writeback.writebackId)
+    markMessageMovedToTrash(messageId, trash.folderId, destinationUid)
+    return { messageId, accountId: target.accountId, folderId: trash.folderId, action: 'trash' }
+  } catch (error) {
+    const message = getErrorMessage(error)
+    if (!remoteSucceeded) markRemoteWritebackFailed(writeback.writebackId, message)
+    throw error
+  } finally {
+    await client?.logout().catch(() => undefined)
+  }
 }
 
 function requiresPermanentRemoteDelete(target: MessageDeleteTarget): boolean {

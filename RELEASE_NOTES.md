@@ -1,3 +1,84 @@
+# OneMail Next 版本记录 / Release notes
+
+## 下一版本（开发中，2026-10-23） / Next version (in development)
+
+对比基线：`origin/main`，提交 `3cc38678519d7c38ee9e25a8f9989b5169934000`（`feat: improve mailbox folders and message actions`）。远端默认分支为 `main`，没有 `master` 分支。当前 `package.json` 版本仍为 `26.730.1039`；本节描述相对主线的代码变化，不代表已发布新的安装包或 GitHub Release。
+
+### 中文
+
+#### 相对主线的功能变化
+
+| 功能           | 主线基线                     | 当前版本                                                                               |
+| -------------- | ---------------------------- | -------------------------------------------------------------------------------------- |
+| 设置布局       | 弹窗式设置                   | 占满应用窗口，左侧导航、右侧内容，左上角返回邮箱                                       |
+| 桌面新邮件通知 | 未提供各邮箱独立开关         | 添加和编辑时可选，通知设置页支持逐个切换和全部开启/关闭；常规设置提供新邮箱默认值      |
+| 远程内容隐私   | 全局外部图片开关及单封加载   | 严格、宽松、不限制模式，支持账号覆盖和可信邮箱/域名，在设置侧边栏管理                  |
+| 远端操作状态   | 缺少统一的持久化写回记录面板 | 记录账号、邮件摘要、操作状态及错误；支持清除完成记录，保留排队和运行中的任务           |
+| 联系人         | 缺少独立联系人管理           | 多地址、备注、星标、搜索、vCard 导入导出，以及写信地址建议                             |
+| 待办和提醒     | 无邮件任务看板               | 从邮件创建待办，管理备注、状态和提醒                                                   |
+| 邮件规则       | 无规则管理和执行流程         | 按收件人、发件人、主题、正文及附件条件匹配，执行标为已读、加入看板、移入“已删除”等动作 |
+| 备份范围       | 导出完整数据库               | 增加“是否备份邮件”，支持仅备份账号、联系人和配置，本地导出与 WebDAV / S3 上传共用选择  |
+| Windows 打包   | package.json 命令            | 增加 PowerShell 7 脚本、环境和版本检查、构建日志，分别生成 x64 目录版或安装包          |
+
+#### 行为和数据变化
+
+- 新增联系人、隐私策略与可信发件人、待办及提醒、邮件规则及执行记录、远端写回等数据库表；账号新增桌面通知开关。已有账号迁移后默认开启通知，新邮箱默认值初始为“是”，修改默认值不追溯改变已有账号。
+- “远程内容隐私”和“邮件规则”位于设置侧边栏的“网络”和“翻译”之间。“通知设置”支持立即保存，账号通知开关只控制新邮件桌面弹窗和声音，待办提醒独立处理。
+- 规则按顺序处理新增邮件，保存执行进度；首次同步、历史回填和 UIDVALIDITY 重置不批量触发历史邮件规则。
+- 远端写回增加持久化状态、邮件身份核验及受限制的失败重试；应用重启或恢复数据库后不自动重放未完成的远端命令。
+- 仅设置备份保留账号及凭据、联系人、隐私设置、通知设置、文件夹选择、代理、签名、同步方式、邮件规则、全局翻译设置及密钥、远端备份配置等。上述大部分设置原本已随整库备份保存，本次增加了选择性导出及恢复测试，并非新增所有配置的存储能力。
+- 不备份邮件时，排除邮件、正文、搜索索引、附件元数据、草稿、发件箱、待办提醒、同步进度和邮件操作记录；保留文件夹配置并重置邮件计数和同步游标，导出不会删除源数据。
+- 导入后重新应用开机启动和自动更新检查频率，并刷新同步服务。
+- Windows 打包文件范围由整个 `out` 缩小到 `out/main`、`out/preload` 和 `out/renderer`，避免测试用户数据进入应用包。
+
+#### 兼容性与已知限制
+
+- **恢复备份会替换当前本地数据库，不会合并。** 仅设置备份恢复后，本地邮件为空，按同步设置重新拉取；手动同步或禁用同步的账号需要自行启动同步。
+- **SQL 备份不包含磁盘附件文件。** 本地 SQL 包含解密凭据所需的数据库密钥，应作为敏感文件保存；远端上传沿用读取密钥加密。详见[备份范围](./docs/backup-coverage.md)。
+- **远端永久删除的可用性发生变化：** 新代码要求 UID 定向删除；当前 `SimpleImapSession` 尚未提供 `uidExpunge`，因此 IMAP 永久删除会被拒绝。恢复及规则移动要求服务器支持 `MOVE`，不再使用复制后整箱清除的替代路径。
+- 宽松隐私模式使用启发式跟踪识别，不能保证阻止所有跟踪资源。联系人、看板、规则和写回界面仍有中文固定文案，英文覆盖尚不完整。
+- 本次不重复列入主线已有的邮件多选、文件夹视图、默认邮件客户端、POP3、翻译、代理和签名等功能；这些功能的历史说明保留在下方。
+
+#### 构建与验证
+
+- `scripts/build-win-unpacked.ps1`：Windows x64 目录版；`scripts/build-win-x64.ps1`：Windows x64 安装包；共用 `build-win-pwsh7.ps1`，支持 `-SkipInstall`，日志位于 `dist/build-logs`。
+- 已完成类型检查、生产构建和修改文件的 ESLint 检查。回归共覆盖 50 个测试文件、188 个用例；其中 4 个旧用例补齐 Electron 模拟后通过定向复测。
+- 已重新生成 Windows x64 `win-unpacked` 并检查文件与版本信息，尚未对该产物做启动验收。本次更改后的安装包尚未重新生成。
+- 曾在写入输出 EXE 时遇到 `EBUSY`；解除占用后单独重试打包成功，具体占用来源未确定。未添加自动结束进程或自动重试。
+
+### English
+
+Baseline: `origin/main` at `3cc38678519d7c38ee9e25a8f9989b5169934000`. The remote default branch is `main`; there is no `master` branch. The package version remains `26.730.1039`. These notes describe code changes relative to the baseline, not a new published release.
+
+#### Changes from the baseline
+
+- Replaced dialog-sized settings with a full-window layout, sidebar navigation, and a back button. Privacy and Mail Rules are sidebar sections between Network and Translation.
+- Added per-account desktop new-mail notifications to account creation and editing, a Notifications page with individual and bulk switches, and a separate default for new accounts. Existing accounts migrate with notifications enabled. Task reminders remain independent.
+- Replaced the single global remote-image preference with strict, loose, and unrestricted privacy modes, account overrides, and trusted addresses/domains.
+- Added persistent remote writeback records and a status panel with account, message, operation, status, and error details. Clearing completed entries preserves queued/running work. Remote actions verify message identity, restrict retries, and do not automatically replay unfinished commands after restart or restore.
+- Added contacts with multiple addresses, notes, stars, search, vCard import/export, and composer suggestions.
+- Added mail tasks, notes, status management, and reminders.
+- Added ordered mail rules based on recipient, sender, subject, body, and attachment conditions, with mark-as-read, add-to-board, and move-to-Deleted actions. Initial sync, historical backfill, and UIDVALIDITY resets do not apply rules to historical mail in bulk.
+- Added selective backup scope to existing local SQL and WebDAV / S3 backups. Both modes retain accounts, credentials, contacts, privacy, notifications, folder selections, proxies, signatures, sync preferences, rules, translation settings/keys, and remote backup configuration. Most settings were already included in full-database backups; this change adds selective export and restore verification.
+- Settings-only backups omit mail, bodies, indexes, attachment metadata, drafts, outbox, tasks/reminders, sync progress, and operation history. Folder configuration is retained while counts and cursors are reset. Export does not modify source mail. Import now reapplies login startup and update-check preferences.
+- Added PowerShell 7 scripts for Windows x64 directory builds and installers, with dependency/version checks and build logs. Packaging now includes only the main, preload, and renderer build directories under `out`, excluding test user data.
+
+#### Compatibility and limitations
+
+- **Import replaces the current local database; it does not merge.** Settings-only restores require mail to be fetched again according to sync preferences. Manual or disabled accounts need synchronization to be started explicitly.
+- **SQL backups do not include attachment files on disk.** Local SQL contains the database key required to decrypt credentials and must be treated as sensitive data. Remote backups retain read-key encryption. See [backup coverage (Chinese)](./docs/backup-coverage.md).
+- **Remote permanent deletion availability has changed:** the new implementation requires UID-scoped deletion, but the current `SimpleImapSession` does not provide `uidExpunge`, so IMAP permanent deletion is rejected. Restore and rule-based moves require server `MOVE` support; the copy-and-unscoped-expunge alternative is no longer used.
+- Loose privacy mode uses heuristic tracker detection and cannot guarantee blocking every tracker. Some contacts, board, rules, and writeback UI strings remain Chinese-only.
+- Multi-selection, folder views, default mail handling, POP3, translation, proxies, and signatures already exist in the baseline and are not counted as new features here. Earlier notes are retained below.
+
+#### Verification
+
+Type checks, production builds, and ESLint checks for changed files passed. Regression verification covers 188 tests in 50 files, including four targeted reruns after correcting Electron mocks. The Windows x64 directory build was regenerated and its files/version checked, but not launch-tested. Installers have not been rebuilt for these changes. An output-EXE `EBUSY` error cleared on a packaging-only retry; the lock owner was not identified and no process termination or retry automation was added.
+
+---
+
+## 历史版本 / Previous version
+
 # OneMail Next v26.730.1039
 
 ## 中文

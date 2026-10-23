@@ -16,6 +16,12 @@ import {
   stopMailboxWatchers
 } from './services/mailbox-watch'
 import { setNotificationOpenWindowHandler } from './services/notification-center'
+import {
+  setTaskReminderOpenWindowHandler,
+  startTaskReminderService,
+  stopTaskReminderService
+} from './services/task-reminder.service'
+import { processPendingMailRules } from './services/mail-rule.service'
 import { ensureDefaultMailClientRegistration } from './services/default-mail-client'
 import { enqueueMailtoUrl, findMailtoUrl } from './services/mailto'
 import {
@@ -191,7 +197,12 @@ if (hasSingleInstanceLock)
     }
     initializeDatabase()
     registerIpcHandlers()
+    setTaskReminderOpenWindowHandler((route) => showMainWindow(route))
+    void processPendingMailRules().catch((error) =>
+      console.error('处理待执行邮件规则失败。', error)
+    )
     startMailboxWatchers()
+    startTaskReminderService()
     startAutoUpdateChecks(getSettings().updateCheckFrequency)
     initializeTray(process.platform === 'win32' ? windowsIcon : appIcon, {
       showWindow: () => showMainWindow(),
@@ -230,6 +241,7 @@ app.on('before-quit', () => {
   destroyTray()
   stopAutoUpdateChecks()
   stopMailboxWatchers()
+  stopTaskReminderService()
   closeDatabase()
 })
 

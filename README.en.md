@@ -1,7 +1,7 @@
 # OneMail
 
 <p align="left">
-  <img src="https://img.shields.io/badge/Electron-39-47848F?logo=electron&logoColor=white" alt="Electron 39" />
+  <img src="https://img.shields.io/badge/Electron-42-47848F?logo=electron&logoColor=white" alt="Electron 42" />
   <img src="https://img.shields.io/badge/React-19-282C34?logo=react&logoColor=61DAFB" alt="React 19" />
   <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white" alt="TypeScript 5.9" />
   <img src="https://img.shields.io/badge/Tailwind_CSS-4-06B6D4?logo=tailwind-css&logoColor=white" alt="Tailwind CSS 4" />
@@ -15,6 +15,8 @@
 OneMail is a local-first desktop mail client built with Electron, React, and TypeScript. It syncs mail over IMAP into a local SQLite database and provides unified inboxes, mail filters, safe HTML previews, attachment downloads, and SQL backup import/export.
 
 **Language**: [中文](./README.md) | English
+
+**Release notes**: [Changes and version notes](./RELEASE_NOTES.md) · **Backup details**: [Coverage and restore behavior (Chinese)](./docs/backup-coverage.md)
 
 **Website / Downloads**: [https://github.com/pcjiang1998/one-mail-next](https://github.com/pcjiang1998/one-mail-next)
 
@@ -32,7 +34,13 @@ This software is based on the [one-mail](https://github.com/zhihui-hu/one-mail) 
 - **Gmail-style composer**: supports new mail, reply, reply all, forward, CC/BCC expansion, rich text formatting, attachments, and drafts.
 - **Encrypted local credentials**: mailbox passwords and app passwords are stored with AES-256-GCM encryption.
 - **Local SQLite cache**: accounts, headers, bodies, attachment metadata, search indexes, and settings stay on your machine.
-- **SQL backup and restore**: export the current database to SQL, or import a backup during first launch.
+- **Selectable backup scope**: local SQL export/import and encrypted WebDAV / S3 backups can include mail or retain only accounts, contacts, and configuration.
+- **Per-account notifications**: choose desktop notifications when adding or editing an account, or enable/disable all accounts in settings. New accounts have a separate global default.
+- **Remote writeback status**: inspect accounts, message summaries, operation status, and errors. Clearing completed records preserves queued and running tasks.
+- **Contacts**: manage contacts with multiple addresses, import/export vCards, and use address suggestions while composing.
+- **Task board and reminders**: turn messages into tasks, add notes, change task status, and schedule reminders.
+- **Remote content privacy**: strict, loose, and unrestricted modes, with per-account overrides and trusted sender addresses or domains.
+- **Mail rules**: process newly synchronized messages by recipient, sender, subject, body, and attachment conditions; mark as read, add to the board, or move to Deleted.
 - **Configurable sync policy**: control sync interval, cache window, and external image behavior.
 - **Folder-level sync**: refresh remote folders with IMAP `LIST` while editing an account, then select folders to sync in addition to INBOX.
 
@@ -64,7 +72,7 @@ OneMail uses a three-column desktop layout:
 
 The composer is a floating Gmail-like window. It can expand or restore, CC/BCC fields open on demand, and the footer contains send, formatting, attachment, link, save draft, and discard actions.
 
-Settings include sync policy, SQL import/export, and app information. The About page shows version, author, GitHub project link, and manual GitHub Release update checks.
+Settings fill the application window, with navigation on the left, content on the right, and a back button at the top left. Sections include General, Mailbox Management, Sync, Notifications, Signatures, Network, Remote Content Privacy, Mail Rules, Translation, Backup, and About. Privacy and rules are edited inside settings. About includes version information, the project link, and manual update checks.
 
 When no account exists, you can add an account or restore a SQL backup directly.
 
@@ -74,9 +82,10 @@ When no account exists, you can add an account or restore a SQL backup directly.
 
 ### Requirements
 
-- Node.js 22 or newer
-- pnpm recommended, npm also works
+- Node.js 22.13.0 or newer; Windows builds have been verified locally with Node.js 24.16.0
+- pnpm 10.34.1, matching `packageManager` in `package.json`; the Windows scripts check this version
 - macOS, Windows, or Linux desktop environment
+- PowerShell 7 and native Windows Node.js for the Windows build scripts
 
 ### Install Dependencies
 
@@ -135,6 +144,58 @@ pnpm build:mac
 # Linux AppImage / snap / deb
 pnpm build:linux
 ```
+
+### Windows x64 Build Scripts
+
+Run from the project root in PowerShell 7:
+
+```powershell
+# Set these when using the local proxy; adjust for your environment
+$env:HTTP_PROXY = 'http://127.0.0.1:7890'
+$env:HTTPS_PROXY = 'http://127.0.0.1:7890'
+
+# Produce dist\win-unpacked without an installer
+pwsh -NoProfile -File .\scripts\build-win-unpacked.ps1
+
+# Produce an x64 installer and keep win-unpacked
+pwsh -NoProfile -File .\scripts\build-win-x64.ps1
+```
+
+The scripts install locked dependencies, run type checks, build production assets, and package the application. Add `-SkipInstall` when complete Windows dependencies are already installed and unchanged:
+
+```powershell
+pwsh -NoProfile -File .\scripts\build-win-unpacked.ps1 -SkipInstall
+pwsh -NoProfile -File .\scripts\build-win-x64.ps1 -SkipInstall
+```
+
+- Directory entry point: `dist\win-unpacked\OneMailNext.exe`. Distribute the entire directory.
+- Installer: `dist\one-mail-next-<version>-win-x64-setup.exe`, using the version from `package.json`.
+- Logs: `dist\build-logs\`. The scripts do not publish or change version numbers.
+- For both x64 and ARM64, run `scripts\build-win-pwsh7.ps1`; use `-Architecture x64` or `-Architecture arm64` to select one architecture.
+
+An `EBUSY: resource busy or locked` error referencing `dist\win-unpacked\OneMailNext.exe` means the output executable is locked. Exit applications launched from that directory before packaging. The lock observed during this update cleared on retry; its owner was not identified. If source compilation succeeded and the source has not changed, retry only packaging after the lock clears:
+
+```powershell
+pnpm exec electron-builder --win --dir --publish never --x64
+```
+
+### Notifications and Backup Scope
+
+Set desktop notifications when adding or editing an account. Settings > Notifications provides individual switches and enable-all/disable-all actions. General settings retain the default for newly added accounts, initially enabled; changing that default does not change existing accounts.
+
+In Settings > Backup, **Include mail in backup** is checked by default and applies to both local SQL exports and WebDAV / S3 uploads. Both modes preserve accounts and credentials, contacts, privacy policies and trusted senders, notification preferences, folder selections, proxies, signatures, sync preferences, mail rules, global translation settings and service keys, remote backup configuration, and other database-backed app settings.
+
+| Content                                                   | Checked      | Unchecked    |
+| --------------------------------------------------------- | ------------ | ------------ |
+| Accounts, contacts, and configuration above               | Included     | Included     |
+| Cached mail, bodies, search indexes, attachment metadata  | Included     | Omitted      |
+| Drafts, outbox, tasks, and reminders                      | Included     | Omitted      |
+| Sync progress, rule execution, and mail operation history | Included     | Omitted      |
+| Attachment files on disk                                  | Not included | Not included |
+
+**Import replaces the local database; it does not merge data.** A settings-only restore keeps folder selections but clears local mail, counts, and sync cursors. Messages are fetched again according to the restored sync preferences. Manual or disabled accounts need synchronization to be started explicitly. Export does not remove mail from the source database.
+
+Keep attachment files separately, especially local files referenced by unsent drafts. Local SQL backups contain the database key needed to decrypt credentials and must be treated as sensitive files. Remote uploads encrypt the backup with the configured read key.
 
 ---
 

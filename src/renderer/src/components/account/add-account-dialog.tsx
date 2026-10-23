@@ -70,9 +70,19 @@ export function AddAccountForm({
   React.useEffect(() => {
     void window.api.settings
       .get()
-      .then(setSettings)
-      .catch(() => undefined)
-  }, [])
+      .then((nextSettings) => {
+        setSettings(nextSettings)
+        if (!form.getFieldState('desktopNotificationsEnabled').isDirty) {
+          form.setValue(
+            'desktopNotificationsEnabled',
+            nextSettings.defaultDesktopNotificationsEnabled !== false
+          )
+        }
+      })
+      .catch((loadError) =>
+        setError(loadError instanceof Error ? loadError.message : t('settings.updateError'))
+      )
+  }, [form, t])
 
   function handleKindChange(nextKind: string): void {
     const preset = getProviderPreset(nextKind as AccountKind)
@@ -125,12 +135,16 @@ export function AddAccountForm({
         popPort: values.kind === 'custom' && values.usePopProtocol ? values.popPort : undefined,
         popSecurity:
           values.kind === 'custom' && values.usePopProtocol ? values.popSecurity : undefined,
+        desktopNotificationsEnabled: values.desktopNotificationsEnabled,
         proxyMode: values.proxyMode,
         customProxyUrl: values.proxyMode === 'custom' ? values.customProxyUrl?.trim() : undefined,
         signatureMode: values.signatureMode,
         signatureId: values.signatureMode === 'custom' ? values.signatureId : undefined
       })
-      form.reset(defaultAccountFormValues)
+      form.reset({
+        ...defaultAccountFormValues,
+        desktopNotificationsEnabled: settings?.defaultDesktopNotificationsEnabled ?? true
+      })
       setKind(defaultAccountFormValues.kind)
     } catch (submitError) {
       setError(formatAccountSubmitError(submitError, t('account.add.saveError'), values.kind, t))
@@ -179,7 +193,7 @@ export function AddAccountForm({
       </div>
 
       <div className={footerClassName}>
-        <Button type="submit" disabled={pending}>
+        <Button type="submit" disabled={pending || !settings}>
           {pending
             ? kind === 'outlook'
               ? t('account.add.waitingAuth')

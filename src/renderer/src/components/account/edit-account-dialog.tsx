@@ -38,6 +38,7 @@ type EditAccountValues = {
   accountLabel?: string
   password?: string
   smtpEnabled: boolean
+  desktopNotificationsEnabled: boolean
   smtpHost?: string
   smtpPort: number
   smtpSecurity: SmtpSecurity
@@ -160,6 +161,7 @@ export function EditAccountDialog({
         smtpHost: isCustomAccount && values.smtpEnabled ? values.smtpHost?.trim() : undefined,
         smtpPort: isCustomAccount && values.smtpEnabled ? values.smtpPort : undefined,
         smtpSecurity: isCustomAccount && values.smtpEnabled ? values.smtpSecurity : undefined,
+        desktopNotificationsEnabled: values.desktopNotificationsEnabled,
         proxyMode: values.proxyMode,
         customProxyUrl: values.proxyMode === 'custom' ? optionalText(values.customProxyUrl) : '',
         signatureMode: values.signatureMode,
@@ -227,6 +229,22 @@ export function EditAccountDialog({
               placeholder={t('account.form.labelPlaceholder')}
               aria-invalid={Boolean(form.formState.errors.accountLabel)}
               {...form.register('accountLabel')}
+            />
+          </AccountFormField>
+          <AccountFormField
+            id="edit-desktop-notifications"
+            label={t('account.form.desktopNotifications')}
+          >
+            <Controller
+              control={form.control}
+              name="desktopNotificationsEnabled"
+              render={({ field }) => (
+                <Checkbox
+                  id="edit-desktop-notifications"
+                  checked={field.value}
+                  onCheckedChange={(checked) => field.onChange(checked === true)}
+                />
+              )}
             />
           </AccountFormField>
           {isOAuthAccount ? null : (
@@ -533,6 +551,7 @@ function createEditAccountSchema(
       accountLabel: z.string().trim().max(80, t('account.form.labelMax')).optional(),
       password: z.string().trim().optional(),
       smtpEnabled: z.boolean(),
+      desktopNotificationsEnabled: z.boolean(),
       proxyMode: z.enum(['global', 'none', 'system', 'custom']),
       customProxyUrl: z.string().trim().optional(),
       signatureMode: z.enum(['global', 'none', 'custom']),
@@ -577,6 +596,7 @@ function getDefaultValues(account: Account): EditAccountValues {
     accountLabel: getInitialLabel(account),
     password: '',
     smtpEnabled: account.smtpEnabled ?? false,
+    desktopNotificationsEnabled: account.desktopNotificationsEnabled ?? true,
     smtpHost: account.smtpHost ?? '',
     smtpPort: account.smtpPort ?? 465,
     smtpSecurity: account.smtpSecurity ?? 'ssl_tls',
