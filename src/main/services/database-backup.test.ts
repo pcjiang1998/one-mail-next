@@ -246,7 +246,9 @@ describe('database SQL backup', () => {
           table
         ).toBe(includeMail ? 1 : 0)
       }
-    }
+    },
+    // Schema creation, encrypted settings and disk restore exceed 5s on Windows CI.
+    15_000
   )
 
   it('updates notifications for selected accounts without changing defaults or other settings', () => {
