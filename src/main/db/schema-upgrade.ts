@@ -29,6 +29,11 @@ const TABLE_COLUMN_UPGRADES: Record<string, ColumnDefinition[]> = {
     }
   ],
   onemail_mail_accounts: [
+    {
+      name: 'desktop_notifications_enabled',
+      definition:
+        'desktop_notifications_enabled INTEGER NOT NULL DEFAULT 1 CHECK (desktop_notifications_enabled IN (0, 1))'
+    },
     { name: 'smtp_host', definition: 'smtp_host TEXT' },
     {
       name: 'smtp_port',
@@ -130,6 +135,67 @@ export function upgradeSchema(db: SqliteDatabaseSync): void {
   `)
   for (const [tableName, columns] of Object.entries(TABLE_COLUMN_UPGRADES)) {
     addMissingColumns(db, tableName, columns)
+  }
+  ensureFeatureColumns(db)
+  ensureRemoteWritebackOperationKinds(db)
+}
+
+function ensureFeatureColumns(db: SqliteDatabaseSync): void {
+  addMissingColumns(db, 'onemail_rule_executions', [
+    { name: 'progress_json', definition: "progress_json TEXT NOT NULL DEFAULT '{}'" }
+  ])
+}
+
+function ensureRemoteWritebackOperationKinds(db: SqliteDatabaseSync): void {
+  const row = db
+    .prepare<{
+      sql: string | null
+    }>("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'onemail_remote_writebacks'")
+    .get()
+  if (!row?.sql || row.sql.includes("'smtp_send'") || row.sql.includes("'permanent_delete'")) return
+
+  db.exec('PRAGMA foreign_keys = OFF;')
+  try {
+    db.exec(`
+      ALTER TABLE onemail_remote_writebacks RENAME TO onemail_remote_writebacks_legacy;
+      CREATE TABLE onemail_remote_writebacks (
+        writeback_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id INTEGER NOT NULL,
+        message_id INTEGER,
+        operation_kind TEXT NOT NULL CHECK (operation_kind IN ('mark_read', 'mark_unread', 'move_to_trash', 'restore', 'permanent_delete', 'mark_answered', 'append_sent', 'smtp_send', 'rule_action')),
+        status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'success', 'failed', 'cancelled')),
+        message_subject_snapshot TEXT,
+        message_sender_snapshot TEXT,
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        error_message TEXT,
+        attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+        idempotency_key TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        started_at TEXT,
+        finished_at TEXT,
+        dismissed_at TEXT,
+        FOREIGN KEY (account_id) REFERENCES onemail_mail_accounts(account_id) ON DELETE CASCADE,
+        FOREIGN KEY (message_id) REFERENCES onemail_mail_messages(message_id) ON DELETE SET NULL
+      );
+      INSERT INTO onemail_remote_writebacks (
+        writeback_id, account_id, message_id, operation_kind, status,
+        message_subject_snapshot, message_sender_snapshot, payload_json,
+        error_message, attempt_count, idempotency_key, created_at, started_at,
+        finished_at, dismissed_at
+      )
+      SELECT writeback_id, account_id, message_id, operation_kind, status,
+        message_subject_snapshot, message_sender_snapshot, COALESCE(payload_json, '{}'),
+        error_message, attempt_count, idempotency_key, created_at, started_at,
+        finished_at, dismissed_at
+      FROM onemail_remote_writebacks_legacy;
+      DROP TABLE onemail_remote_writebacks_legacy;
+      CREATE INDEX IF NOT EXISTS idx_onemail_remote_writebacks_status
+        ON onemail_remote_writebacks(status, dismissed_at, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_onemail_remote_writebacks_account
+        ON onemail_remote_writebacks(account_id, created_at DESC);
+    `)
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON;')
   }
 }
 

@@ -31,6 +31,13 @@ import { SimpleImapSession } from './imap-session'
 import { loadAttachmentContent } from './attachment-downloader'
 import { authenticateImapSession } from './imap-auth'
 import { connectMailTunnel } from '../services/network-proxy'
+import { selectAndVerifyRemoteMessage } from '../services/remote-writeback-imap'
+import {
+  markRemoteWritebackFailed,
+  markRemoteWritebackRunning,
+  markRemoteWritebackSuccess,
+  queueRemoteWriteback
+} from '../services/remote-writeback.service'
 
 export type SmtpSecurity = 'ssl_tls' | 'starttls' | 'none'
 
@@ -131,35 +138,81 @@ export async function sendPlainTextEmail(input: SmtpSendInput): Promise<SmtpSend
     remoteAction: 'smtp_send'
   })
 
+  let sendWriteback: ReturnType<typeof queueRemoteWriteback> | undefined
+  let bookkeepingWarning: string | undefined
   try {
-    const sent = await deliverRawEmail({ ...input, rawMime: composed.rawMime, from })
-    markOutboxSent(outbox.outboxId, composed.rawMime)
-    updateMessageOperationStatus(operation.operationId, 'success')
-
-    const appendResult = await appendMessageToSentFolder(input.accountId, composed.rawMime)
-    if (appendResult.warning) {
-      updateOutboxWarning(outbox.outboxId, appendResult.warning)
-    }
-
-    if (input.relatedMessageId && isReplyKind(input.composeKind)) {
-      const warning = await markAnsweredBestEffort(input.relatedMessageId)
-      if (warning) updateOutboxWarning(outbox.outboxId, warning)
-      if (!appendResult.warning && warning) {
-        return { ...composed, outboxId: outbox.outboxId, envelopeId: sent.envelopeId, warning }
-      }
-    }
-
-    return {
-      ...composed,
-      outboxId: outbox.outboxId,
-      envelopeId: sent.envelopeId,
-      warning: appendResult.warning
+    sendWriteback = queueRemoteWriteback({
+      accountId: input.accountId,
+      messageId: input.relatedMessageId,
+      operationKind: 'smtp_send',
+      messageSubject: input.subject,
+      messageSender: input.from?.email,
+      payload: { outboxId: outbox.outboxId }
+    })
+    if (!markRemoteWritebackRunning(sendWriteback.writebackId)) {
+      bookkeepingWarning = '发送审计记录无法启动。'
+      sendWriteback = undefined
     }
   } catch (error) {
+    bookkeepingWarning = `创建发送审计记录失败：${error instanceof Error ? error.message : String(error)}`
+  }
+
+  let sent: { envelopeId?: string }
+  try {
+    sent = await deliverRawEmail({ ...input, rawMime: composed.rawMime, from })
+  } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
+    if (sendWriteback) markRemoteWritebackFailed(sendWriteback.writebackId, message)
     markOutboxFailed(outbox.outboxId, message)
     updateMessageOperationStatus(operation.operationId, 'failed', message)
     throw error
+  }
+
+  // SMTP accepted the message. From this point onward no bookkeeping or IMAP
+  // append/audit error may turn the send into a retryable SMTP failure.
+  if (sendWriteback && !markRemoteWritebackSuccess(sendWriteback.writebackId)) {
+    bookkeepingWarning = [bookkeepingWarning, '邮件已发送，但保存发送审计成功状态失败。']
+      .filter(Boolean)
+      .join('；')
+  }
+  try {
+    markOutboxSent(outbox.outboxId, composed.rawMime)
+    updateMessageOperationStatus(operation.operationId, 'success')
+  } catch (error) {
+    bookkeepingWarning = [
+      bookkeepingWarning,
+      `邮件已发送，但本地发送记录更新失败：${error instanceof Error ? error.message : String(error)}`
+    ]
+      .filter(Boolean)
+      .join('；')
+    console.error(bookkeepingWarning, error)
+  }
+
+  const appendResult = await appendSentWithWriteback(
+    { ...input, outboxId: outbox.outboxId },
+    composed.rawMime
+  )
+  const warnings = [bookkeepingWarning, appendResult.warning].filter(Boolean) as string[]
+
+  if (input.relatedMessageId && isReplyKind(input.composeKind)) {
+    const warning = await markAnsweredBestEffort(input.relatedMessageId)
+    if (warning) warnings.push(warning)
+  }
+
+  const warning = warnings.length > 0 ? warnings.join('；') : undefined
+  if (warning) {
+    try {
+      updateOutboxWarning(outbox.outboxId, warning)
+    } catch (error) {
+      console.error('保存发送后警告失败；不会重新发送邮件。', error)
+    }
+  }
+
+  return {
+    ...composed,
+    outboxId: outbox.outboxId,
+    envelopeId: sent.envelopeId,
+    warning
   }
 }
 
@@ -328,28 +381,127 @@ function isReplyKind(kind?: OutboxComposeKind): boolean {
   return kind === 'reply' || kind === 'reply_all'
 }
 
+async function appendSentWithWriteback(
+  input: SmtpSendInput,
+  rawMime: string
+): Promise<Awaited<ReturnType<typeof appendMessageToSentFolder>>> {
+  let writeback: ReturnType<typeof queueRemoteWriteback> | undefined
+  let auditWarning: string | undefined
+  const idempotencyKey = input.outboxId ? `append-sent:${input.outboxId}` : undefined
+
+  try {
+    writeback = queueRemoteWriteback({
+      accountId: input.accountId,
+      messageId: input.relatedMessageId,
+      operationKind: 'append_sent',
+      messageSubject: input.subject,
+      messageSender: input.from?.email,
+      payload: { outboxId: input.outboxId },
+      idempotencyKey
+    })
+    if (writeback.status === 'success') {
+      return { appended: true }
+    }
+    if (!markRemoteWritebackRunning(writeback.writebackId)) {
+      auditWarning = '已发送，但追加到已发送文件夹的写回记录无法启动。'
+      writeback = undefined
+    }
+  } catch (error) {
+    auditWarning = `已发送，但创建已发送追加记录失败：${error instanceof Error ? error.message : String(error)}`
+  }
+
+  let result: Awaited<ReturnType<typeof appendMessageToSentFolder>>
+  try {
+    result = await appendMessageToSentFolder(input.accountId, rawMime)
+  } catch (error) {
+    result = { appended: false, warning: error instanceof Error ? error.message : String(error) }
+  }
+
+  if (writeback) {
+    if (result.appended) {
+      if (!markRemoteWritebackSuccess(writeback.writebackId)) {
+        result.warning = [result.warning, '已追加到已发送文件夹，但保存写回成功状态失败。']
+          .filter(Boolean)
+          .join('；')
+      }
+    } else {
+      markRemoteWritebackFailed(writeback.writebackId, result.warning ?? '追加到已发送文件夹失败。')
+    }
+  }
+  if (auditWarning) {
+    result.warning = [result.warning, auditWarning].filter(Boolean).join('；')
+  }
+  return result
+}
+
 function toSendOperationKind(kind?: OutboxComposeKind): 'send' | 'reply' | 'reply_all' | 'forward' {
   return kind && kind !== 'new' ? kind : 'send'
 }
 
 async function markAnsweredBestEffort(messageId: number): Promise<string | undefined> {
-  markMessageAnswered(messageId)
-  const source = getMessageComposeSource(messageId)
+  try {
+    markMessageAnswered(messageId)
+  } catch (error) {
+    return `邮件已发送，但本地已回复标记失败：${error instanceof Error ? error.message : String(error)}`
+  }
+
+  let source: ReturnType<typeof getMessageComposeSource>
+  try {
+    source = getMessageComposeSource(messageId)
+  } catch (error) {
+    return `原邮件本地已标记为已回复，但读取远端定位信息失败：${error instanceof Error ? error.message : String(error)}`
+  }
   if (!source) return '原邮件本地已标记为已回复，但未找到远端邮件定位信息。'
 
-  const account = getAccount(source.accountId)
+  let account: ReturnType<typeof getAccount>
+  try {
+    account = getAccount(source.accountId)
+  } catch (error) {
+    return `原邮件本地已标记为已回复，但读取账号失败：${error instanceof Error ? error.message : String(error)}`
+  }
   if (!account) return `Account not found: ${source.accountId}`
   if (account.receiveProtocol === 'pop3') return undefined
+
+  let writeback: ReturnType<typeof queueRemoteWriteback> | undefined
+  try {
+    writeback = queueRemoteWriteback({
+      accountId: source.accountId,
+      messageId,
+      operationKind: 'mark_answered',
+      payload: { folderPath: source.folderPath, uid: source.uid }
+    })
+    if (!markRemoteWritebackRunning(writeback.writebackId)) {
+      return '原邮件本地已标记为已回复，但远端写回记录无法启动。'
+    }
+  } catch (error) {
+    return `原邮件本地已标记为已回复，但创建远端写回记录失败：${error instanceof Error ? error.message : String(error)}`
+  }
+  if (!writeback) return '原邮件本地已标记为已回复，但远端写回记录不存在。'
 
   let session: SimpleImapSession | undefined
   try {
     session = await SimpleImapSession.connect(account, 'A')
     await authenticateImapSession(account, session)
-    await session.selectMailbox(source.folderPath)
+    if (source.rfc822MessageId) {
+      await selectAndVerifyRemoteMessage(session, {
+        accountId: source.accountId,
+        folderId: source.folderId,
+        folderPath: source.folderPath,
+        uid: source.uid,
+        rfc822MessageId: source.rfc822MessageId
+      })
+    } else {
+      await session.selectMailbox(source.folderPath)
+    }
     await session.setAnsweredFlag(source.uid, true)
+    if (!markRemoteWritebackSuccess(writeback.writebackId)) {
+      return '原邮件已在远端标记为已回复，但保存写回成功状态失败。'
+    }
     return undefined
   } catch (error) {
-    return error instanceof Error ? error.message : String(error)
+    const message = error instanceof Error ? error.message : String(error)
+    markRemoteWritebackFailed(writeback.writebackId, message)
+    return message
   } finally {
     await session?.logout().catch(() => undefined)
   }

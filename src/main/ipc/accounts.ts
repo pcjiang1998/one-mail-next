@@ -7,6 +7,7 @@ import {
   removeAccount,
   removeAccounts,
   reorderAccounts,
+  setAccountNotifications,
   updateAccount,
   updateAccountIdleSupport
 } from '../db/repositories/account.repository'
@@ -15,6 +16,7 @@ import { testPop3Connection } from '../mail/pop3-session'
 import { refreshMailboxWatchers } from '../services/mailbox-watch'
 import type {
   AccountCreateInput,
+  AccountNotificationsInput,
   AccountCreatedEvent,
   AccountOrderInput,
   AccountUpdateInput
@@ -29,6 +31,9 @@ import {
 
 export function registerAccountIpc(): void {
   ipcMain.handle('accounts/list', () => listAccounts())
+  ipcMain.handle('accounts/setNotifications', (_event, input: AccountNotificationsInput) =>
+    setAccountNotifications(input)
+  )
   ipcMain.handle('accounts/openAddWindow', () => {
     openAddAccountWindow()
     return true
@@ -226,6 +231,7 @@ function normalizeOAuthAccountUpdate(
     accountLabel: input.accountLabel,
     displayName: input.displayName,
     syncEnabled: input.syncEnabled,
+    desktopNotificationsEnabled: input.desktopNotificationsEnabled,
     remoteDeletePolicy: input.remoteDeletePolicy,
     proxyMode: input.proxyMode,
     customProxyUrl: input.customProxyUrl,

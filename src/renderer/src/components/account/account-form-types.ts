@@ -71,6 +71,7 @@ export type AccountFormValues = {
   smtpPort: number
   smtpSecurity: SmtpSecurity
   smtpEnabled: boolean
+  desktopNotificationsEnabled: boolean
   usePopProtocol: boolean
   popHost?: string
   popPort: number
@@ -470,6 +471,7 @@ export function createAccountSchema(
         .max(65535, t('account.form.portMax')),
       smtpSecurity: z.enum(['ssl_tls', 'starttls', 'none']),
       smtpEnabled: z.boolean(),
+      desktopNotificationsEnabled: z.boolean(),
       usePopProtocol: z.boolean(),
       popHost: z.string().trim().optional(),
       popPort: z
@@ -546,6 +548,7 @@ export function createAccountSchema(
 
 export const defaultAccountFormValues: AccountFormValues = {
   kind: 'gmail',
+  desktopNotificationsEnabled: true,
   email: '',
   password: '',
   accountLabel: '',

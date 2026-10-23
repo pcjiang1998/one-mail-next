@@ -71,7 +71,25 @@ export type {
   TranslationProviderConfig,
   TranslationRequest,
   TranslationResult,
-  TranslationSettings
+  TranslationSettings,
+  AccountPrivacyMode,
+  AccountPrivacyPolicy,
+  BoardTask,
+  BoardTaskStatus,
+  BoardTaskStatusUpdate,
+  Contact,
+  ContactInput,
+  CreateBoardTaskInput,
+  MailRule,
+  MailRuleAction,
+  MailRuleCondition,
+  MailRuleInput,
+  PrivacyPolicyUpdateInput,
+  PrivacyTrustedSender,
+  PrivacyTrustedSenderInput,
+  RemoteWriteback,
+  VCardImportResult,
+  WritebackStatus
 } from '../shared/types'
 
 declare global {

@@ -1,4 +1,6 @@
 export type {
+  AccountNotificationsInput,
+  BackupExportOptions,
   AccountCreateInput,
   AccountCreatedEvent,
   AccountBulkRemoveResult,
@@ -77,5 +79,22 @@ export type {
   TranslationProviderConfig,
   TranslationRequest,
   TranslationResult,
-  TranslationSettings
+  TranslationSettings,
+  AccountPrivacyMode,
+  AccountPrivacyPolicy,
+  BoardTask,
+  BoardTaskStatus,
+  BoardTaskStatusUpdate,
+  Contact,
+  ContactInput,
+  CreateBoardTaskInput,
+  MailRule,
+  MailRuleAction,
+  MailRuleCondition,
+  MailRuleInput,
+  PrivacyPolicyUpdateInput,
+  PrivacyTrustedSender,
+  PrivacyTrustedSenderInput,
+  RemoteWriteback,
+  WritebackStatus
 } from '../../shared/types'

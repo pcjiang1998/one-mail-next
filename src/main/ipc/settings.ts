@@ -21,8 +21,11 @@ import {
 } from '../services/database-backup'
 import { refreshMailboxWatchers } from '../services/mailbox-watch'
 import { startAutoUpdateChecks } from '../services/auto-update'
+import { getDatabase } from '../db/connection'
+import { setOpenAtLogin } from '../services/login-item'
 import type {
   BackupImportProgress,
+  BackupExportOptions,
   BackupSyncSettings,
   MailSignatureInput,
   SettingsUpdateInput
@@ -53,12 +56,14 @@ export function registerSettingsIpc(): void {
   ipcMain.handle('settings/testBackupSync', (_event, input: BackupSyncSettings) =>
     testBackupSync(input)
   )
-  ipcMain.handle('settings/uploadBackupSync', () => uploadBackupSync())
+  ipcMain.handle('settings/uploadBackupSync', (_event, options?: BackupExportOptions) =>
+    uploadBackupSync(options)
+  )
   ipcMain.handle('settings/downloadBackupSync', async (event, operationId?: string) => {
     const result = await downloadBackupSync(
       createBackupImportProgressReporter(event.sender, operationId)
     )
-    if (result.imported) refreshMailboxWatchers()
+    if (result.imported) applyRestoredSettings()
     return result
   })
   ipcMain.handle(
@@ -68,18 +73,31 @@ export function registerSettingsIpc(): void {
         input,
         createBackupImportProgressReporter(event.sender, operationId)
       )
-      if (result.imported) refreshMailboxWatchers()
+      if (result.imported) applyRestoredSettings()
       return result
     }
   )
-  ipcMain.handle('settings/exportSql', () => exportDatabaseSqlBackup())
+  ipcMain.handle('settings/exportSql', (_event, options?: BackupExportOptions) =>
+    exportDatabaseSqlBackup(options)
+  )
   ipcMain.handle('settings/importSql', async (event, operationId?: string) => {
     const result = await importDatabaseSqlBackup(
       createBackupImportProgressReporter(event.sender, operationId)
     )
-    if (result.imported) refreshMailboxWatchers()
+    if (result.imported) applyRestoredSettings()
     return result
   })
+}
+
+function applyRestoredSettings(): void {
+  const loginSetting = getDatabase()
+    .prepare<{
+      setting_value: string
+    }>("SELECT setting_value FROM onemail_app_settings WHERE setting_key = 'open_at_login'")
+    .get()
+  if (loginSetting) setOpenAtLogin(loginSetting.setting_value === '1')
+  startAutoUpdateChecks(getSettings().updateCheckFrequency)
+  refreshMailboxWatchers()
 }
 
 function createBackupImportProgressReporter(

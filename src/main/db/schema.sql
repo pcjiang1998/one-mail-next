@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS onemail_mail_accounts (
     smtp_auth_type IN ('oauth2', 'app_password', 'password', 'bridge', 'manual')
   ),
   smtp_enabled INTEGER NOT NULL DEFAULT 1 CHECK (smtp_enabled IN (0, 1)),
+  desktop_notifications_enabled INTEGER NOT NULL DEFAULT 1 CHECK (desktop_notifications_enabled IN (0, 1)),
   pop_host TEXT,
   pop_port INTEGER CHECK (pop_port IS NULL OR (pop_port > 0 AND pop_port <= 65535)),
   pop_security TEXT CHECK (pop_security IN ('ssl_tls', 'starttls', 'none')),
@@ -370,4 +371,130 @@ CREATE TABLE IF NOT EXISTS onemail_app_settings (
   setting_value TEXT NOT NULL,
   value_type TEXT NOT NULL DEFAULT 'string' CHECK (value_type IN ('string', 'number', 'boolean', 'json')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS onemail_schema_migrations (
+  version INTEGER PRIMARY KEY,
+  applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS onemail_remote_writebacks (
+  writeback_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id INTEGER NOT NULL,
+  message_id INTEGER,
+  operation_kind TEXT NOT NULL CHECK (operation_kind IN ('mark_read', 'mark_unread', 'move_to_trash', 'restore', 'permanent_delete', 'mark_answered', 'append_sent', 'smtp_send', 'rule_action')),
+  status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'success', 'failed', 'cancelled')),
+  message_subject_snapshot TEXT,
+  message_sender_snapshot TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  error_message TEXT,
+  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  idempotency_key TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  started_at TEXT,
+  finished_at TEXT,
+  dismissed_at TEXT,
+  FOREIGN KEY (account_id) REFERENCES onemail_mail_accounts(account_id) ON DELETE CASCADE,
+  FOREIGN KEY (message_id) REFERENCES onemail_mail_messages(message_id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_onemail_remote_writebacks_status
+  ON onemail_remote_writebacks(status, dismissed_at, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_onemail_remote_writebacks_account
+  ON onemail_remote_writebacks(account_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS onemail_account_privacy_policies (
+  account_id INTEGER PRIMARY KEY,
+  mode TEXT NOT NULL DEFAULT 'inherit' CHECK (mode IN ('inherit', 'unrestricted', 'loose', 'strict')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  FOREIGN KEY (account_id) REFERENCES onemail_mail_accounts(account_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS onemail_privacy_trusted_senders (
+  trusted_sender_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id INTEGER NOT NULL,
+  match_type TEXT NOT NULL CHECK (match_type IN ('email', 'domain')),
+  match_value TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  FOREIGN KEY (account_id) REFERENCES onemail_mail_accounts(account_id) ON DELETE CASCADE,
+  UNIQUE(account_id, match_type, match_value)
+);
+
+CREATE TABLE IF NOT EXISTS onemail_contacts (
+  contact_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  display_name TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  is_starred INTEGER NOT NULL DEFAULT 0 CHECK (is_starred IN (0, 1)),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS onemail_contact_emails (
+  contact_email_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  contact_id INTEGER NOT NULL,
+  email TEXT NOT NULL,
+  normalized_email TEXT NOT NULL,
+  label TEXT NOT NULL DEFAULT '',
+  is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
+  FOREIGN KEY (contact_id) REFERENCES onemail_contacts(contact_id) ON DELETE CASCADE,
+  UNIQUE(contact_id, normalized_email)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_onemail_contact_default_email
+  ON onemail_contact_emails(contact_id) WHERE is_default = 1;
+CREATE INDEX IF NOT EXISTS idx_onemail_contact_emails_normalized
+  ON onemail_contact_emails(normalized_email);
+
+CREATE TABLE IF NOT EXISTS onemail_tasks (
+  task_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id INTEGER NOT NULL,
+  message_id INTEGER,
+  status TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('todo', 'in_progress', 'completed', 'cancelled')),
+  note TEXT NOT NULL DEFAULT '',
+  subject_snapshot TEXT NOT NULL DEFAULT '',
+  sender_snapshot TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  completed_at TEXT,
+  FOREIGN KEY (account_id) REFERENCES onemail_mail_accounts(account_id) ON DELETE CASCADE,
+  FOREIGN KEY (message_id) REFERENCES onemail_mail_messages(message_id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS onemail_task_reminders (
+  reminder_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL,
+  fire_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'fired', 'cancelled')),
+  fired_at TEXT,
+  FOREIGN KEY (task_id) REFERENCES onemail_tasks(task_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_onemail_task_reminders_due
+  ON onemail_task_reminders(status, fire_at);
+
+CREATE TABLE IF NOT EXISTS onemail_mail_rules (
+  rule_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  account_id INTEGER,
+  enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  conditions_json TEXT NOT NULL DEFAULT '[]',
+  actions_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  FOREIGN KEY (account_id) REFERENCES onemail_mail_accounts(account_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_onemail_mail_rules_order
+  ON onemail_mail_rules(enabled, sort_order, rule_id);
+
+CREATE TABLE IF NOT EXISTS onemail_rule_executions (
+  execution_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  rule_id INTEGER NOT NULL,
+  message_id INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('matched', 'success', 'failed')),
+  progress_json TEXT NOT NULL DEFAULT '{}',
+  error_message TEXT,
+  executed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  FOREIGN KEY (rule_id) REFERENCES onemail_mail_rules(rule_id) ON DELETE CASCADE,
+  FOREIGN KEY (message_id) REFERENCES onemail_mail_messages(message_id) ON DELETE CASCADE,
+  UNIQUE(rule_id, message_id)
 );

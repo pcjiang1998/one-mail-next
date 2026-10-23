@@ -16,7 +16,9 @@ const defaultSettings: AppSettings = {
   syncIntervalMinutes: 15,
   syncWindowDays: 90,
   openAtLogin: false,
+  defaultDesktopNotificationsEnabled: true,
   externalImagesBlocked: true,
+  privacyDefaultMode: 'strict',
   locale: 'zh-CN',
   theme: 'light',
   updateCheckFrequency: 'daily',
@@ -97,7 +99,12 @@ const settingsDefinition = {
   syncIntervalMinutes: { key: 'sync_interval_minutes', type: 'number' },
   syncWindowDays: { key: 'sync_window_days', type: 'number' },
   openAtLogin: { key: 'open_at_login', type: 'boolean' },
+  defaultDesktopNotificationsEnabled: {
+    key: 'default_desktop_notifications_enabled',
+    type: 'boolean'
+  },
   externalImagesBlocked: { key: 'external_images_blocked', type: 'boolean' },
+  privacyDefaultMode: { key: 'privacy_default_mode', type: 'string' },
   locale: { key: 'locale', type: 'string' },
   theme: { key: 'theme', type: 'string' },
   updateCheckFrequency: { key: 'update_check_frequency', type: 'string' },
@@ -147,10 +154,19 @@ export function getSettings(): AppSettings {
     syncIntervalMinutes: readNumber(byKey.get(settingsDefinition.syncIntervalMinutes.key), 15),
     syncWindowDays: readNumber(byKey.get(settingsDefinition.syncWindowDays.key), 90),
     openAtLogin: getOpenAtLogin(),
+    defaultDesktopNotificationsEnabled: readBoolean(
+      byKey.get(settingsDefinition.defaultDesktopNotificationsEnabled.key),
+      true
+    ),
     externalImagesBlocked: readBoolean(
       byKey.get(settingsDefinition.externalImagesBlocked.key),
       true
     ),
+    privacyDefaultMode: readEnum(
+      byKey.get(settingsDefinition.privacyDefaultMode.key),
+      ['unrestricted', 'loose', 'strict'],
+      defaultSettings.privacyDefaultMode ?? 'strict'
+    ) as AppSettings['privacyDefaultMode'],
     locale: byKey.get(settingsDefinition.locale.key)?.setting_value ?? defaultSettings.locale,
     theme: readEnum(
       byKey.get(settingsDefinition.theme.key),
@@ -227,6 +243,11 @@ export function updateSettings(input: SettingsUpdateInput): AppSettings {
     settingsDefinition.syncWindowDays.type
   )
   writeSetting(
+    settingsDefinition.defaultDesktopNotificationsEnabled.key,
+    next.defaultDesktopNotificationsEnabled ? '1' : '0',
+    settingsDefinition.defaultDesktopNotificationsEnabled.type
+  )
+  writeSetting(
     settingsDefinition.openAtLogin.key,
     next.openAtLogin ? '1' : '0',
     settingsDefinition.openAtLogin.type
@@ -235,6 +256,11 @@ export function updateSettings(input: SettingsUpdateInput): AppSettings {
     settingsDefinition.externalImagesBlocked.key,
     next.externalImagesBlocked ? '1' : '0',
     settingsDefinition.externalImagesBlocked.type
+  )
+  writeSetting(
+    settingsDefinition.privacyDefaultMode.key,
+    next.privacyDefaultMode ?? 'strict',
+    settingsDefinition.privacyDefaultMode.type
   )
   writeSetting(settingsDefinition.locale.key, next.locale, settingsDefinition.locale.type)
   writeSetting(settingsDefinition.theme.key, next.theme, settingsDefinition.theme.type)
@@ -459,6 +485,16 @@ function ensureDefaultSettings(): void {
     settingsDefinition.externalImagesBlocked.key,
     defaultSettings.externalImagesBlocked ? '1' : '0',
     settingsDefinition.externalImagesBlocked.type
+  )
+  updateMissingSetting(
+    settingsDefinition.privacyDefaultMode.key,
+    defaultSettings.privacyDefaultMode ?? 'strict',
+    settingsDefinition.privacyDefaultMode.type
+  )
+  updateMissingSetting(
+    settingsDefinition.defaultDesktopNotificationsEnabled.key,
+    '1',
+    settingsDefinition.defaultDesktopNotificationsEnabled.type
   )
   updateMissingSetting(
     settingsDefinition.openAtLogin.key,

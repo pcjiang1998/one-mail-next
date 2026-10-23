@@ -109,7 +109,7 @@ function persistMessageBody(
   rawSource?: string
 ): MailMessageBody {
   const bodyText = normalizeMailBodyText(parsed.text)
-  const bodyHtml = sanitizeHtml(parsed.html)
+  const bodyHtml = sanitizeCachedMailHtml(parsed.html)
   const db = getDatabase()
   const params: SqliteParams = {
     messageId,
@@ -506,17 +506,29 @@ function decodeBytes(bytes: Uint8Array, charset: string): string {
   return Buffer.from(bytes).toString('utf8')
 }
 
-function sanitizeHtml(value?: string): string | undefined {
+/**
+ * Cache preprocessing is deliberately policy-independent. Resource originals remain inert and
+ * reversible; the reader's inert DOM parser/allowlist is the final security boundary (including
+ * for old caches). Never persist a mode-specific rendering or discard blocked resource URLs.
+ */
+export function sanitizeCachedMailHtml(value?: string): string | undefined {
   if (!value) return undefined
 
   const sanitized = value
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/\s(on[a-z]+)=("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
-    .replace(/\s(src|href)=("|')\s*javascript:[\s\S]*?\2/gi, '')
     .replace(
-      /\ssrc=(["'])((?:https?:)?\/\/[^"'\s>]+)\1/gi,
-      (_match: string, quote: string, url: string) => ` data-blocked-src=${quote}${url}${quote}`
+      /<(script|style|noscript|iframe|frame|frameset|object|embed|svg|math|template|audio|video|canvas)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi,
+      ''
+    )
+    .replace(/<\/?(?:script|style|iframe|object|embed|base|meta|link)\b[^>]*>/gi, '')
+    .replace(/<[a-z][\w:-]*(?:\s+(?:"[^"]*"|'[^']*'|[^'">])*)?\s*\/?>/gi, (tag) =>
+      tag
+        .replace(/\s(on[a-z]+)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+        .replace(/\s(href)\s*=\s*("|')\s*javascript:[\s\S]*?\2/gi, '')
+        .replace(
+          /\s(src|srcset|poster|background|style)(\s*=\s*)("[^"]*"|'[^']*'|[^\s>]+)/gi,
+          (_match: string, attribute: string, equals: string, original: string) =>
+            ` data-blocked-${attribute.toLowerCase()}${equals}${original}`
+        )
     )
     .trim()
 

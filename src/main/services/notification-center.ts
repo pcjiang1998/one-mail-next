@@ -50,9 +50,11 @@ export function notifyNewMail({
     notifiedAt: new Date().toISOString()
   }
 
-  playNotificationSound()
   broadcastNewMail(notification)
-  void showDesktopNotifications(notification, account)
+  if (account?.desktopNotificationsEnabled) {
+    playNotificationSound()
+    void showDesktopNotifications(notification, account)
+  }
 }
 
 function playNotificationSound(): void {

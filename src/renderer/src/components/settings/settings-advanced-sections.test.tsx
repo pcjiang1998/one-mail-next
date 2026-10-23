@@ -17,6 +17,7 @@ const settings: AppSettings = {
   syncIntervalMinutes: 15,
   syncWindowDays: 90,
   openAtLogin: false,
+  defaultDesktopNotificationsEnabled: true,
   externalImagesBlocked: true,
   locale: 'zh-CN',
   theme: 'light',

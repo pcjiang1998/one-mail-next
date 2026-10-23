@@ -1,4 +1,4 @@
-import type { AppSettings, SystemInfo } from '../../../../shared/types'
+import type { AppSettings, SystemInfo, WritebackStatus } from '../../../../shared/types'
 import {
   ChevronDown,
   CloudDownload,
@@ -39,6 +39,7 @@ import type { SyncNotice } from './use-sync-feedback'
 import { formatSyncNotice } from './use-sync-feedback'
 import { useI18n } from '@renderer/lib/i18n'
 import { cn } from '@renderer/lib/utils'
+import { WritebackStatusPanel } from '@renderer/components/mail/writeback-status-panel'
 
 export function NoAccountsBody({
   importingSql,
@@ -187,13 +188,21 @@ export function StatusBar({
   accountCount,
   messageCount,
   unreadCount,
-  syncNotice
+  syncNotice,
+  writebackStatus,
+  onClearWriteback,
+  onClearCompletedWritebacks,
+  onRetryWriteback
 }: {
   settings: AppSettings | null
   accountCount: number
   messageCount: number
   unreadCount: number
   syncNotice: SyncNotice
+  writebackStatus: WritebackStatus
+  onClearWriteback: (writebackId: number) => void
+  onClearCompletedWritebacks: () => void
+  onRetryWriteback: (writebackId: number) => void
 }): React.JSX.Element {
   const { t } = useI18n()
   const syncText = formatSyncNotice(syncNotice, t)
@@ -220,6 +229,12 @@ export function StatusBar({
             {syncText}
           </span>
         ) : null}
+        <WritebackStatusPanel
+          status={writebackStatus}
+          onClear={(writebackId) => onClearWriteback(writebackId)}
+          onClearCompleted={onClearCompletedWritebacks}
+          onRetry={(writebackId) => onRetryWriteback(writebackId)}
+        />
         <span>{t('status.accounts', { count: accountCount })}</span>
         <span>{t('status.messages', { count: messageCount })}</span>
         <span>{t('status.cacheDays', { days: settings?.syncWindowDays ?? 90 })}</span>

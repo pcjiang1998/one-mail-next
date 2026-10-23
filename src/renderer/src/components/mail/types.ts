@@ -25,6 +25,7 @@ export type Account = {
   smtpPort?: number
   smtpSecurity?: SmtpSecurity
   smtpEnabled?: boolean
+  desktopNotificationsEnabled?: boolean
   popHost?: string
   popPort?: number
   popSecurity?: ImapSecurity

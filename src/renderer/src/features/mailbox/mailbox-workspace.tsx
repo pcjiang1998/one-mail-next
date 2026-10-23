@@ -6,6 +6,7 @@ import { EditAccountDialog } from '@renderer/components/account/edit-account-dia
 import { OutlookImapHelpDialog } from '@renderer/components/account/outlook-imap-help-dialog'
 import { RemoveAccountDialog } from '@renderer/components/account/remove-account-dialog'
 import { DeleteMessageDialog } from '@renderer/components/mail/delete-message-dialog'
+import { AddTaskDialog } from '@renderer/components/mail/add-task-dialog'
 import { MailComposer } from '@renderer/components/mail/mail-composer'
 import { MailList } from '@renderer/components/mail/mail-list'
 import { MailReader } from '@renderer/components/mail/mail-reader'
@@ -15,7 +16,7 @@ import {
   type BackupImportDialogSource
 } from '@renderer/components/backup/backup-import-dialog'
 import type { Account, MailFilterTag, Message } from '@renderer/components/mail/types'
-import { SettingsDialog } from '@renderer/components/settings/settings-dialog'
+import { SettingsDialog, type SettingsSection } from '@renderer/components/settings/settings-dialog'
 import {
   ResizableHandle,
   ResizablePanel,
@@ -76,6 +77,7 @@ import { useMailComposer } from './use-mail-composer'
 import { useMessageActions } from './use-message-actions'
 import { useMessageSelection } from './use-message-selection'
 import { useSyncFeedback } from './use-sync-feedback'
+import { useWritebackStatus } from './use-writeback-status'
 
 export type DialogKind = 'edit' | 'delete' | 'settings' | null
 
@@ -101,7 +103,11 @@ function formatImportResultMessage(
   )
 }
 
-export function MailboxWorkspace(): React.JSX.Element {
+export function MailboxWorkspace({
+  initialSettingsSection
+}: {
+  initialSettingsSection?: SettingsSection
+}): React.JSX.Element {
   const navigate = useNavigate()
   const routeParams = useParams<{ accountId?: string; messageId?: string }>()
   const { setLocale, t } = useI18n()
@@ -113,14 +119,16 @@ export function MailboxWorkspace(): React.JSX.Element {
   const [selectedAccountId, setSelectedAccountId] = React.useState('all')
   const [filters, setFilters] = React.useState<MailFilterTag[]>([])
   const [searchKeyword, setSearchKeyword] = React.useState('')
-  const [dialogKind, setDialogKind] = React.useState<DialogKind>(null)
+  const [dialogKind, setDialogKind] = React.useState<DialogKind>(
+    initialSettingsSection ? 'settings' : null
+  )
   const [backupImportDialogOpen, setBackupImportDialogOpen] = React.useState(false)
   const [backupImportSource, setBackupImportSource] =
     React.useState<BackupImportDialogSource>('sql')
   const [backupImportBusy, setBackupImportBusy] = React.useState(false)
-  const [settingsInitialSection, setSettingsInitialSection] = React.useState<
-    'accounts' | 'general' | 'about'
-  >('accounts')
+  const [settingsInitialSection, setSettingsInitialSection] = React.useState<SettingsSection>(
+    initialSettingsSection ?? 'general'
+  )
   const [dialogAccountId, setDialogAccountId] = React.useState<string | null>(null)
   const [warningAccountId, setWarningAccountId] = React.useState<string | null>(null)
   const [outboxOpen, setOutboxOpen] = React.useState(false)
@@ -128,9 +136,16 @@ export function MailboxWorkspace(): React.JSX.Element {
   const [outboxAccountId, setOutboxAccountId] = React.useState<number | null>(null)
   const [outboxMessages, setOutboxMessages] = React.useState<OutboxMessage[]>([])
   const [outboxPending, setOutboxPending] = React.useState(false)
+  const [taskMessage, setTaskMessage] = React.useState<Message | null>(null)
   const [outlookImapHelpAccount, setOutlookImapHelpAccount] = React.useState<Account | null>(null)
   const { syncingAccountIds, syncNotice, startSyncing, finishSyncing, setNotice, clearSyncing } =
     useSyncFeedback()
+  const {
+    status: writebackStatus,
+    clear: clearWriteback,
+    clearCompleted: clearCompletedWritebacks,
+    retry: retryWriteback
+  } = useWritebackStatus()
   const [loading, setLoading] = React.useState(true)
   const [error, setError] = React.useState<string | null>(null)
   const selectedMailbox = parseMailboxSelection(selectedAccountId)
@@ -390,10 +405,10 @@ export function MailboxWorkspace(): React.JSX.Element {
   }, [loading, openRouteTarget, routeAccountId, routeMessageId, t])
 
   React.useEffect(() => {
-    if (routeAccountId && routeMessageId) return
+    if (initialSettingsSection || (routeAccountId && routeMessageId)) return
     internalRouteRef.current = '/'
     navigate('/', { replace: true })
-  }, [navigate, routeAccountId, routeMessageId])
+  }, [initialSettingsSection, navigate, routeAccountId, routeMessageId])
 
   const syncCreatedAccountInBackground = React.useCallback(
     (accountId: number, accountEmail: string, startedAt: Date): void => {
@@ -930,6 +945,8 @@ export function MailboxWorkspace(): React.JSX.Element {
               onResolveAccountWarning={(account) => {
                 setWarningAccountId(account.id)
               }}
+              onOpenContacts={() => navigate('/contacts')}
+              onOpenBoard={() => navigate('/board')}
             />
           </ResizablePanel>
 
@@ -981,6 +998,7 @@ export function MailboxWorkspace(): React.JSX.Element {
                 void openForwardMessages(targetMessages, asAttachments)
               }}
               onDeleteMessages={requestDeleteMessages}
+              onAddToBoard={(message) => setTaskMessage(message)}
             />
           </ResizablePanel>
 
@@ -1028,6 +1046,19 @@ export function MailboxWorkspace(): React.JSX.Element {
         messageCount={selectedAccount.messageCount ?? messages.length}
         unreadCount={realAccounts.reduce((sum, account) => sum + account.unread, 0)}
         syncNotice={syncNotice}
+        writebackStatus={writebackStatus}
+        onClearWriteback={(writebackId) => void clearWriteback(writebackId)}
+        onClearCompletedWritebacks={() => void clearCompletedWritebacks()}
+        onRetryWriteback={(writebackId) => void retryWriteback(writebackId)}
+      />
+
+      <AddTaskDialog
+        message={taskMessage}
+        open={Boolean(taskMessage)}
+        onOpenChange={(open) => {
+          if (!open) setTaskMessage(null)
+        }}
+        onCreated={() => undefined}
       />
 
       <EditAccountDialog
@@ -1077,7 +1108,10 @@ export function MailboxWorkspace(): React.JSX.Element {
         systemInfo={systemInfo}
         updateStatus={updateStatus}
         initialSection={settingsInitialSection}
-        onOpenChange={(open) => setDialogKind(open ? 'settings' : null)}
+        onOpenChange={(open) => {
+          setDialogKind(open ? 'settings' : null)
+          if (!open && initialSettingsSection) navigate('/', { replace: true })
+        }}
         onSubmit={handleUpdateSettings}
         accounts={realAccounts}
         onUpdateAccount={handleUpdateAccountSettings}

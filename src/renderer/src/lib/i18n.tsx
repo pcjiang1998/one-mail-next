@@ -52,6 +52,29 @@ const zhCN = {
   'settings.general': '常规',
   'settings.signatures': '邮件签名',
   'settings.network': '网络',
+  'settings.privacy': '远程内容隐私',
+  'settings.notifications': '通知设置',
+  'settings.notifications.accountsDescription':
+    '逐个设置邮箱的桌面新邮件通知，或一键全部开启、关闭。修改立即保存，不影响常规设置中的新邮箱默认值。',
+  'settings.notifications.enableAll': '全部开启通知',
+  'settings.notifications.disableAll': '全部关闭通知',
+  'settings.notifications.empty': '尚未添加邮箱。',
+  'settings.notifications.saving': '正在保存通知设置…',
+  'settings.notifications.error': '通知设置保存失败。',
+  'settings.backup.includeMail': '是否备份邮件',
+  'settings.backup.scopeDescription':
+    '适用于本地导出和远端上传。始终备份邮箱账号、联系人、隐私策略、通知设置、文件夹选择、代理、签名、同步方式、邮件规则和全局翻译设置。取消勾选后，不备份邮件、正文、草稿、待办提醒、同步进度和邮件操作记录。',
+  'settings.backup.restoreDescription':
+    '导入备份会替换当前本地数据库，不会合并。仅设置备份恢复后本地邮件为空，按原有同步设置重新拉取；手动同步的邮箱需要手动同步。',
+  'settings.backup.attachmentDescription':
+    '勾选时包含数据库中的邮件和附件信息，但不包含磁盘上的附件文件。迁移时请另行保留本地附件，尤其是尚未发送草稿引用的文件。',
+  'settings.rules': '邮件规则',
+  'settings.backToMailbox': '返回主页面',
+  'settings.navigation': '设置页面',
+  'settings.notifications.title': '新邮箱默认启用桌面通知',
+  'settings.notifications.description':
+    '添加邮箱时默认勾选“是否需要桌面通知”。修改此项不会更改已有邮箱的通知设置。',
+  'account.form.desktopNotifications': '是否需要桌面通知',
   'settings.sync': '邮件同步',
   'settings.translation': '翻译',
   'settings.backup': '导入导出',
@@ -801,6 +824,29 @@ const enUS: TranslationMap = {
   'settings.general': 'General',
   'settings.signatures': 'Signatures',
   'settings.network': 'Network',
+  'settings.privacy': 'Remote content privacy',
+  'settings.notifications': 'Notifications',
+  'settings.notifications.accountsDescription':
+    'Control desktop new-mail notifications per account, or turn them all on or off. Changes save immediately and do not change the default for new accounts in General settings.',
+  'settings.notifications.enableAll': 'Enable all notifications',
+  'settings.notifications.disableAll': 'Disable all notifications',
+  'settings.notifications.empty': 'No accounts added yet.',
+  'settings.notifications.saving': 'Saving notification settings…',
+  'settings.notifications.error': 'Could not save notification settings.',
+  'settings.backup.includeMail': 'Include mail in backup',
+  'settings.backup.scopeDescription':
+    'Applies to local exports and remote uploads. Always includes accounts, contacts, privacy policies, notifications, folder selection, proxies, signatures, sync preferences, mail rules and global translation settings. Uncheck to omit messages, bodies, drafts, tasks and reminders, sync progress and mail operation history.',
+  'settings.backup.restoreDescription':
+    'Import replaces the local database; it does not merge data. Restoring a settings-only backup leaves local mail empty and fetches it again according to sync preferences. Accounts using manual sync require a manual sync.',
+  'settings.backup.attachmentDescription':
+    'When checked, includes mail and attachment metadata stored in the database, but not attachment files on disk. Keep local files separately when migrating, especially files referenced by unsent drafts.',
+  'settings.rules': 'Mail rules',
+  'settings.backToMailbox': 'Back to mailbox',
+  'settings.navigation': 'Settings pages',
+  'settings.notifications.title': 'Enable desktop notifications for new accounts',
+  'settings.notifications.description':
+    'Select desktop notifications by default when adding an account. Existing accounts keep their own notification setting.',
+  'account.form.desktopNotifications': 'Use desktop notifications',
   'settings.sync': 'Mail sync',
   'settings.translation': 'Translation',
   'settings.backup': 'Import / Export',

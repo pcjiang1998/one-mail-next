@@ -10,7 +10,12 @@ import {
   setDatabaseKey,
   setDatabasePath
 } from '../db/connection'
-import type { BackupImportProgress, BackupImportResult, BackupImportSource } from '../ipc/types'
+import type {
+  BackupExportOptions,
+  BackupImportProgress,
+  BackupImportResult,
+  BackupImportSource
+} from '../ipc/types'
 
 type BackupFileInfo = {
   key: string
@@ -30,8 +35,10 @@ const DATABASE_KEY_PATTERN = /^k(\d{10})([0-9a-f]{16})$/
 const BACKUP_FILE_PATTERN = /^(k\d{10}[0-9a-f]{16})_(\d{10})\.sql$/
 const MAX_BACKUP_CLOCK_SKEW_SECONDS = 5 * 60
 
-export async function exportDatabaseSqlBackup(): Promise<string | null> {
-  const backup = createDatabaseSqlBackup()
+export async function exportDatabaseSqlBackup(
+  options?: BackupExportOptions
+): Promise<string | null> {
+  const backup = createDatabaseSqlBackup(options)
   const saveResult = await dialog.showSaveDialog({
     title: '导出 SQL 备份',
     defaultPath: join(app.getPath('documents'), backup.fileName),
@@ -44,7 +51,9 @@ export async function exportDatabaseSqlBackup(): Promise<string | null> {
   return saveResult.filePath
 }
 
-export function createDatabaseSqlBackup(): DatabaseSqlBackup {
+export function createDatabaseSqlBackup(
+  options: BackupExportOptions = { includeMail: true }
+): DatabaseSqlBackup {
   const exportedAt = getUnixTimestamp()
   const key = getDatabaseKey()
 
@@ -52,7 +61,7 @@ export function createDatabaseSqlBackup(): DatabaseSqlBackup {
     key,
     exportedAt,
     fileName: `${key}_${exportedAt}.sql`,
-    sql: dumpDatabaseSql(exportedAt)
+    sql: dumpDatabaseSql(exportedAt, options)
   }
 }
 
@@ -164,7 +173,27 @@ function getRestoredDatabaseStats(): Pick<BackupImportResult, 'accountCount' | '
   }
 }
 
-function dumpDatabaseSql(exportedAt: number): string {
+// Keep configuration and contacts in settings-only exports. Mail-dependent data
+// must be omitted together so restored databases have no dangling references.
+const MAIL_DATA_TABLES = new Set([
+  'onemail_mail_messages',
+  'onemail_message_addresses',
+  'onemail_message_bodies',
+  'onemail_message_attachments',
+  'onemail_message_search',
+  'onemail_outbox_messages',
+  'onemail_outbox_attachments',
+  'onemail_folder_sync_states',
+  'onemail_pop3_messages',
+  'onemail_sync_runs',
+  'onemail_message_operations',
+  'onemail_remote_writebacks',
+  'onemail_rule_executions',
+  'onemail_tasks',
+  'onemail_task_reminders'
+])
+
+function dumpDatabaseSql(exportedAt: number, { includeMail }: BackupExportOptions): string {
   const db = getDatabase()
   const rows = db
     .prepare<{ sql: string }>(
@@ -205,17 +234,36 @@ function dumpDatabaseSql(exportedAt: number): string {
     '-- OneMail SQL Backup',
     `-- key: ${getDatabaseKey()}`,
     `-- exported_at: ${exportedAt}`,
+    `-- include_mail: ${includeMail}`,
     'PRAGMA foreign_keys = OFF;',
     'BEGIN TRANSACTION;',
     ...rows.map((row) => `${row.sql};`)
   ]
 
   for (const tableName of tableNames) {
+    if (!includeMail && MAIL_DATA_TABLES.has(tableName)) continue
     const tableRows = db
       .prepare<Record<string, unknown>>(`SELECT * FROM "${escapeIdentifier(tableName)}"`)
       .all()
 
     for (const row of tableRows) {
+      if (!includeMail && tableName === 'onemail_mail_folders') {
+        // Preserve folder choices, but restart discovery and fetching without
+        // the old message counts or incremental synchronization cursors.
+        Object.assign(row, {
+          uid_validity: null,
+          uid_next: null,
+          highest_modseq: null,
+          total_count: 0,
+          unread_count: 0,
+          last_sync_at: null
+        })
+      }
+      if (!includeMail && tableName === 'onemail_mail_accounts') {
+        row.last_sync_at = null
+        row.last_error = null
+        row.status = row.sync_enabled === 1 ? 'active' : 'disabled'
+      }
       statements.push(formatInsertStatement(tableName, row))
     }
   }

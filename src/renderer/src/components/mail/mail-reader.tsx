@@ -49,6 +49,8 @@ import {
 } from '@renderer/components/ui/tooltip'
 import { useI18n, type TranslationKey } from '@renderer/lib/i18n'
 import { translateMail } from '@renderer/lib/api'
+import { MAIL_PRIVACY_CHANGED_EVENT, resolveMailPrivacyMode } from '../../../../shared/mail-privacy'
+import type { AccountPrivacyPolicy } from '../../../../shared/types'
 
 const REMOTE_IMAGES_HELP_URL = 'https://huzhihui.com/blog/click-load-images-ip-leak-email-tracking'
 const MAIL_HTML_PREPARE_DELAY_MS = 40
@@ -56,7 +58,7 @@ const MAIL_HTML_PREPARE_DELAY_MS = 40
 type PreparedMailHtmlState = {
   messageId: string
   sourceHtml: string
-  allowExternalImages: boolean
+  policyKey: string
   result: PreparedMailHtml
 }
 
@@ -85,7 +87,13 @@ type MailReaderProps = {
   onDelete?: () => void
 }
 
-export function MailReader({
+export function MailReader(props: MailReaderProps): React.JSX.Element {
+  // A per-message grant (and asynchronous work) must never survive an account/message switch,
+  // including switching A → B → A without clicking anything in B.
+  return <MailReaderContent key={`${props.message.accountId}:${props.message.id}`} {...props} />
+}
+
+function MailReaderContent({
   message,
   recipientAddress,
   loading = false,
@@ -104,14 +112,55 @@ export function MailReader({
   const canShowHtml = Boolean(message.html)
   const hasLoadedBody = message.bodyLoaded || canShowHtml
   const canLoadBody = !hasLoadedBody && !loadingBody
-  const [externalContentState, setExternalContentState] = React.useState({
-    allowed: false,
-    messageId: message.id
-  })
-  const externalContentAllowed =
-    !externalImagesBlocked ||
-    (externalContentState.messageId === message.id && externalContentState.allowed)
+  const [externalContentAllowed, setExternalContentAllowed] = React.useState(false)
+  const hasPrivacyApi = typeof window.api?.privacy?.list === 'function'
+  const [privacyState, setPrivacyState] = React.useState<{
+    policy?: AccountPrivacyPolicy
+    pending: boolean
+    error?: string
+  }>({ pending: hasPrivacyApi })
+  const mode = hasPrivacyApi
+    ? resolveMailPrivacyMode(message.accountId, message.fromAddress, privacyState.policy)
+    : externalImagesBlocked
+      ? 'strict'
+      : 'unrestricted'
+  const policyKey = `${mode}:${externalContentAllowed}`
   const htmlSource = message.html ?? ''
+
+  React.useEffect(() => {
+    if (!hasPrivacyApi) return
+    let cancelled = false
+    let generation = 0
+    const load = async (): Promise<void> => {
+      const request = ++generation
+      setPrivacyState({ pending: true }) // Fail closed while a new policy is being read.
+      setExternalContentAllowed(false)
+      try {
+        const policies = await window.api.privacy.list()
+        const policy = policies.find((item) => item.accountId === message.accountId)
+        if (!policy) throw new Error('未找到当前邮箱的隐私策略。')
+        if (!cancelled && request === generation) setPrivacyState({ policy, pending: false })
+      } catch (error) {
+        if (!cancelled && request === generation) {
+          setPrivacyState({
+            pending: false,
+            error: error instanceof Error ? error.message : '读取隐私策略失败。'
+          })
+        }
+      }
+    }
+    void load()
+    const refresh = (): void => {
+      void load()
+    }
+    window.addEventListener('focus', refresh)
+    window.addEventListener(MAIL_PRIVACY_CHANGED_EVENT, refresh)
+    return () => {
+      cancelled = true
+      window.removeEventListener('focus', refresh)
+      window.removeEventListener(MAIL_PRIVACY_CHANGED_EVENT, refresh)
+    }
+  }, [hasPrivacyApi, message.accountId, externalImagesBlocked])
   const [preparedHtmlState, setPreparedHtmlState] = React.useState<PreparedMailHtmlState | null>(
     null
   )
@@ -119,15 +168,23 @@ export function MailReader({
     canShowHtml &&
     preparedHtmlState?.messageId === message.id &&
     preparedHtmlState.sourceHtml === htmlSource &&
-    preparedHtmlState.allowExternalImages === externalContentAllowed
+    preparedHtmlState.policyKey === policyKey
       ? preparedHtmlState.result
       : null
-  const blockedCount =
-    preparedHtml?.blockedImageResourceCount ?? preparedHtml?.blockedResourceCount ?? 0
-  const canLoadFullContent = canShowHtml && !externalContentAllowed && blockedCount > 0
+  const blockedCount = preparedHtml?.blockedResourceCount ?? 0
+  const trackerCount = preparedHtml?.blockedTrackerResourceCount ?? 0
+  const autoRemoteContentAllowed = !privacyState.pending && mode !== 'strict'
+  const contentIsAllowed = autoRemoteContentAllowed || externalContentAllowed
+  const canLoadFullContent =
+    canShowHtml &&
+    mode === 'strict' &&
+    !privacyState.pending &&
+    !privacyState.error &&
+    !externalContentAllowed &&
+    (preparedHtml?.blockedImageResourceCount ?? 0) > 0
   const allowExternalContent = React.useCallback(() => {
-    setExternalContentState({ allowed: true, messageId: message.id })
-  }, [message.id])
+    setExternalContentAllowed(true)
+  }, [])
   const hasRealAttachments = message.attachments.some(
     (attachment) => attachment.size !== ATTACHMENT_METADATA_PENDING_SIZE
   )
@@ -149,12 +206,15 @@ export function MailReader({
 
     let cancelled = false
     const timer = window.setTimeout(() => {
-      const result = prepareMailHtml(htmlSource, { allowExternalImages: externalContentAllowed })
+      const result = prepareMailHtml(htmlSource, {
+        mode,
+        allowRemoteImages: externalContentAllowed
+      })
       if (!cancelled) {
         setPreparedHtmlState({
           messageId: message.id,
           sourceHtml: htmlSource,
-          allowExternalImages: externalContentAllowed,
+          policyKey,
           result
         })
       }
@@ -164,7 +224,7 @@ export function MailReader({
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [canShowHtml, externalContentAllowed, htmlSource, message.id])
+  }, [canShowHtml, externalContentAllowed, htmlSource, message.id, mode, policyKey])
 
   async function handleTranslate(): Promise<void> {
     setTranslationState({ messageId: message.id, open: true, pending: true })
@@ -180,7 +240,8 @@ export function MailReader({
           sourceMessage.id === message.id && preparedHtml
             ? preparedHtml.html
             : prepareMailHtml(sourceMessage.html, {
-                allowExternalImages: externalContentAllowed
+                mode,
+                allowRemoteImages: externalContentAllowed
               }).html
         const template = createHtmlTranslationTemplate(sourceHtml)
         if (template.segments.length === 0) throw new Error(t('mail.reader.translationEmpty'))
@@ -220,16 +281,28 @@ export function MailReader({
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-background">
+      {privacyState.error ? (
+        <div
+          role="alert"
+          className="shrink-0 border-b border-destructive/40 bg-destructive/5 px-4 py-2 text-xs text-destructive"
+        >
+          隐私策略异常：{privacyState.error}（已阻止远程内容）
+        </div>
+      ) : null}
       {canShowHtml ? (
         <header className="app-drag-region flex h-10 shrink-0 items-center gap-3 border-b bg-card/60 px-4 text-xs">
           <div className="flex min-w-0 flex-1 items-center gap-2 text-muted-foreground">
             <ShieldCheck className="size-3.5 shrink-0" aria-hidden="true" />
             <span className="truncate">
-              {externalContentAllowed
-                ? t('mail.reader.safeFull')
+              {contentIsAllowed
+                ? trackerCount > 0
+                  ? `已加载图片，已拦截 ${trackerCount} 个疑似跟踪器（启发式检测）`
+                  : t('mail.reader.safeFull')
                 : canLoadFullContent
                   ? t('mail.reader.safeBlocked', { count: blockedCount })
-                  : t('mail.reader.safePreview')}
+                  : trackerCount > 0
+                    ? `已拦截 ${trackerCount} 个疑似跟踪器（启发式检测）`
+                    : t('mail.reader.safePreview')}
             </span>
           </div>
           <div className="app-no-drag flex shrink-0 items-center gap-2">

@@ -8,6 +8,7 @@ import {
   scryptSync
 } from 'node:crypto'
 import type {
+  BackupExportOptions,
   BackupSyncDownloadResult,
   BackupSyncSettings,
   BackupSyncTestResult,
@@ -51,9 +52,11 @@ export async function testBackupSync(input: BackupSyncSettings): Promise<BackupS
   }
 }
 
-export async function uploadBackupSync(): Promise<BackupSyncTransferResult> {
+export async function uploadBackupSync(
+  options?: BackupExportOptions
+): Promise<BackupSyncTransferResult> {
   const settings = requireBackupSyncSettings()
-  const backup = createDatabaseSqlBackup()
+  const backup = createDatabaseSqlBackup(options)
   const protectedBackup = protectRemoteBackup(backup.sql, requireReadKey(settings))
   const remotePath =
     settings.provider === 'webdav'

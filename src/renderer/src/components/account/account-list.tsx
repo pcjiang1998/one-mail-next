@@ -2,6 +2,8 @@ import * as React from 'react'
 import {
   AlertTriangle,
   ArchiveX,
+  Contact,
+  KanbanSquare,
   ChevronRight,
   Edit3,
   MailWarning,
@@ -58,6 +60,8 @@ type AccountListProps = {
   onEditAccount: (account: Account) => void
   onDeleteAccount: (account: Account) => void
   onResolveAccountWarning: (account: Account) => void
+  onOpenContacts?: () => void
+  onOpenBoard?: () => void
 }
 
 export function AccountList({
@@ -74,7 +78,9 @@ export function AccountList({
   onRefreshAccount,
   onEditAccount,
   onDeleteAccount,
-  onResolveAccountWarning
+  onResolveAccountWarning,
+  onOpenContacts,
+  onOpenBoard
 }: AccountListProps): React.JSX.Element {
   const { t } = useI18n()
   const [collapsedAccounts, setCollapsedAccounts] = React.useState<Set<string>>(() => new Set())
@@ -129,6 +135,24 @@ export function AccountList({
       <div className="min-h-0 flex-1 overflow-auto px-1.5 py-1.5">
         <TooltipProvider>
           <div className="flex flex-col gap-0.5">
+            <div className="mb-1 grid gap-0.5 border-b pb-1">
+              <button
+                type="button"
+                className="flex h-7 items-center gap-2 rounded-md px-2 text-left text-xs text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={onOpenContacts}
+              >
+                <Contact className="size-3.5" />
+                联系人
+              </button>
+              <button
+                type="button"
+                className="flex h-7 items-center gap-2 rounded-md px-2 text-left text-xs text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={onOpenBoard}
+              >
+                <KanbanSquare className="size-3.5" />
+                看板
+              </button>
+            </div>
             {allAccount ? (
               <AccountRow
                 account={allAccount}

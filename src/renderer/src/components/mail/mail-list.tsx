@@ -4,6 +4,7 @@ import {
   Files,
   Forward,
   MailOpen,
+  ListTodo,
   Paperclip,
   Reply,
   ReplyAll,
@@ -74,6 +75,7 @@ type MailListProps = {
   onReplyMessage?: (message: Message, replyAll: boolean) => void
   onForwardMessages?: (messages: Message[], asAttachments: boolean) => void
   onDeleteMessages?: (messages: Message[]) => void
+  onAddToBoard?: (message: Message) => void
 }
 
 export function MailList({
@@ -105,7 +107,8 @@ export function MailList({
   onMarkMessagesRead,
   onReplyMessage,
   onForwardMessages,
-  onDeleteMessages
+  onDeleteMessages,
+  onAddToBoard
 }: MailListProps): React.JSX.Element {
   const { locale, t } = useI18n()
   const scrollContainerRef = React.useRef<HTMLDivElement | null>(null)
@@ -297,6 +300,12 @@ export function MailList({
                           </ContextMenuItem>
                         </>
                       )}
+                      {contextMessages.length === 1 ? (
+                        <ContextMenuItem onSelect={() => onAddToBoard?.(contextMessages[0])}>
+                          <ListTodo />
+                          添加待办
+                        </ContextMenuItem>
+                      ) : null}
                       <ContextMenuSeparator />
                       <ContextMenuItem
                         variant="destructive"

@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@renderer/lib/api', () => ({
   translateMail: vi.fn()
@@ -9,6 +9,10 @@ import type { Message } from './types'
 import { MailReader } from './mail-reader'
 import { I18nProvider } from '@renderer/lib/i18n'
 import { translateMail } from '@renderer/lib/api'
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
 
 function createMessage(overrides: Partial<Message> = {}): Message {
   return {
@@ -91,11 +95,11 @@ describe('MailReader remote content', () => {
     expect(screen.queryByText('加载完整内容')).not.toBeInTheDocument()
   })
 
-  it('keeps remote content behind the full-content action by default', async () => {
-    renderMailReader(
+  it('loads ordinary images on request while keeping trackers blocked by default', async () => {
+    const { container } = renderMailReader(
       <MailReader
         message={createMessage({
-          html: '<p>Hello</p><img src="https://example.com/tracker.png">',
+          html: '<p>Hello</p><img src="https://example.com/photo.png"><img src="https://example.com/tracker.png">',
           bodyLoaded: true
         })}
         recipientAddress="account@example.com"
@@ -103,6 +107,63 @@ describe('MailReader remote content', () => {
       />
     )
 
+    const loadContent = await screen.findByText('加载完整内容')
+    expect(container.querySelector('img[src]')).toBeNull()
+    fireEvent.click(loadContent)
+    await waitFor(() => {
+      expect(container.querySelector('img[src="https://example.com/photo.png"]')).not.toBeNull()
+    })
+    expect(container.querySelector('img[src="https://example.com/tracker.png"]')).toBeNull()
+  })
+})
+
+describe('MailReader privacy isolation', () => {
+  it('applies each account mode and clears the per-message grant when switching messages', async () => {
+    const privacyList = vi
+      .fn()
+      .mockResolvedValueOnce([
+        { accountId: 1, mode: 'strict', resolvedMode: 'strict', trustedSenders: [] }
+      ])
+      .mockResolvedValueOnce([
+        { accountId: 2, mode: 'unrestricted', resolvedMode: 'unrestricted', trustedSenders: [] }
+      ])
+      .mockResolvedValueOnce([
+        { accountId: 1, mode: 'strict', resolvedMode: 'strict', trustedSenders: [] }
+      ])
+    vi.stubGlobal('api', { privacy: { list: privacyList } })
+
+    const first = createMessage({
+      id: 'privacy-a',
+      accountId: 1,
+      html: '<p>A</p><img src="https://cdn.example.test/a.png">'
+    })
+    const second = createMessage({
+      id: 'privacy-b',
+      accountId: 2,
+      html: '<p>B</p><img src="https://cdn.example.test/b.png">'
+    })
+    const view = renderMailReader(
+      <MailReader message={first} recipientAddress="account@example.com" onLoadBody={() => {}} />
+    )
+
+    expect(await screen.findByText('加载完整内容')).toBeInTheDocument()
+    view.rerender(
+      <I18nProvider>
+        <MailReader message={second} recipientAddress="account@example.com" onLoadBody={() => {}} />
+      </I18nProvider>
+    )
+    await waitFor(() => {
+      expect(
+        view.container.querySelector('img[src="https://cdn.example.test/b.png"]')
+      ).not.toBeNull()
+    })
+    expect(screen.queryByText('加载完整内容')).not.toBeInTheDocument()
+
+    view.rerender(
+      <I18nProvider>
+        <MailReader message={first} recipientAddress="account@example.com" onLoadBody={() => {}} />
+      </I18nProvider>
+    )
     expect(await screen.findByText('加载完整内容')).toBeInTheDocument()
   })
 })
