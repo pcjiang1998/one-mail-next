@@ -1,5 +1,49 @@
 # OneMail Next 版本记录 / Release notes
 
+## v26.1024.1715（2026-10-24）
+
+本次正式版本合并 2026-10-23 和 2026-10-24 尚未发布的改动，升级基线为 `v26.730.1039`。发布标签为 `v26.1024.1715`，应用版本为 `26.1024.1715`。下方开发记录用于保留逐次变更和当时的验证状态，其中“未生成安装包”等描述指对应的历史提交，不代表本次发布状态。
+
+### 中文
+
+#### 主要更新
+
+- **联系人管理**：支持多地址、备注、星标、vCard 导入导出；从邮件地址悬浮卡快速添加联系人；新增多分组、关键词与分组组合筛选、按组添加收件人，以及复选框批量删除。
+- **邮件看板**：从邮件创建事项，管理状态、备注和提醒；支持多选后批量拖拽到其他分栏、右键编辑信息和提醒时间。看板提醒独立于全局新邮件通知开关。
+- **草稿箱与发送队列**：改为主区域列表，统一展示各账号本地草稿，保留发件账号；支持搜索、账号筛选、分页和批量删除，修复草稿箱反复刷新卡顿。发送队列支持清除全部已发送或失败的本地记录，不影响远端邮件、草稿及排队或发送中的项目。
+- **布局与窗口**：设置改为全窗口侧边导航；侧边栏依次显示草稿箱、发送队列、全部邮箱；修复联系人与看板独立窗口的拖动和窗口按钮重叠。
+- **通知与隐私**：新增账号级新邮件通知、批量开关及新账号默认值；远程内容支持严格、宽松、不限制模式、账号覆盖及可信发件人。
+- **规则与操作记录**：支持按邮件条件执行已读、加入看板、移入已删除等规则；增加持久化远端写回记录及状态面板。
+- **备份与构建**：本地、WebDAV 和 S3 备份可选择是否包含邮件；恢复后重新应用相关设置；新增 Windows PowerShell 打包脚本并收紧应用打包范围。
+- **Outlook 图标**：改用内置图标，修复账号左侧破图；该修复不改变认证和同步逻辑。
+
+#### 升级注意事项
+
+- 恢复备份会替换本地数据库，不执行合并。仅设置备份恢复后需要重新同步邮件；SQL 备份不包含磁盘附件文件。备份含敏感凭据材料，请妥善保存，详见[备份范围](./docs/backup-coverage.md)。
+- 远端永久删除要求 UID 定向删除，当前 IMAP 实现尚未提供相应能力，因此会拒绝该操作；恢复及规则移动要求服务器支持 `MOVE`。
+- Gmail / Outlook 重连、OAuth 刷新以及完整代理覆盖仍待处理。邮件远程图片、背景、允许加载的跟踪资源及 OAuth 请求尚未统一走账号代理；现有隐私拦截策略保持不变。
+- 宽松隐私模式不能保证拦截所有跟踪资源；部分新增界面的英文覆盖尚不完整。
+
+#### 验证与下载
+
+- 功能提交已通过 Windows / Linux CI；本地 56 个测试文件、237 个用例、类型检查和生产构建通过。未宣称全仓库 ESLint 通过。
+- 标签发布工作流构建 Windows 安装程序、macOS DMG/ZIP 和 Linux AppImage/DEB，各包含 x64 与 ARM64。安装包可用性以本标签 Release 附件和 Release 工作流结果为准；尚未进行各平台安装后的人工验收。
+
+### English
+
+This release combines the previously unreleased changes from October 23 and 24, 2026, following `v26.730.1039`. The application version is `26.1024.1715`. Development entries below retain their historical verification and packaging status.
+
+- Added contact management, address hover-card creation, multiple groups per contact, combined search/group filtering, group recipients, and bulk deletion.
+- Added mail tasks and reminders, multi-task board dragging, and context-menu editing. Board reminders are independent of new-mail notification settings.
+- Moved unified local drafts and the sending queue into the main workspace, with draft search/filtering/pagination/bulk deletion and sent/failed queue cleanup. Fixed repeated draft refreshes and standalone-window dragging/control overlap.
+- Added full-window settings, per-account mail notifications, remote-content privacy policies and trusted senders, mail rules, and persistent remote-writeback records.
+- Added optional mail inclusion for local/WebDAV/S3 backups and Windows packaging scripts; bundled the Outlook provider icon locally.
+- Backup restores replace the database, and SQL backups exclude attachment files on disk. IMAP permanent deletion is currently rejected because UID-scoped expunge is unavailable; restore/rule moves require server `MOVE` support.
+- Gmail/Outlook reconnection, OAuth refresh, and full account-proxy coverage remain unresolved. Existing remote-content blocking remains in effect. Some new UI strings are Chinese-only.
+- The feature commit passed Windows/Linux CI, with 237 local tests in 56 files plus type checks and production build. The tag workflow builds Windows, macOS, and Linux packages for x64/ARM64; consult its result and release assets for availability. Installed-package smoke tests have not been completed on each platform.
+
+---
+
 ## 下一版本增量更新（2026-10-24） / Next version update
 
 对比基线：`main` 提交 `5aa786c`。本节记录联系人、看板、草稿箱和发送队列的后续改进；此前的功能说明保留在下方。`package.json` 版本保持 `26.730.1039`，本次提交不创建发布标签，也不代表安装包已更新。
