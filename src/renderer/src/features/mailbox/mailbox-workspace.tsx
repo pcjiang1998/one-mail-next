@@ -11,6 +11,7 @@ import { MailComposer } from '@renderer/components/mail/mail-composer'
 import { MailList } from '@renderer/components/mail/mail-list'
 import { MailReader } from '@renderer/components/mail/mail-reader'
 import { OutboxPanel } from '@renderer/components/mail/outbox-panel'
+import { DraftList } from '@renderer/components/mail/draft-list'
 import {
   BackupImportDialog,
   type BackupImportDialogSource
@@ -35,6 +36,8 @@ import type {
 } from '../../../../shared/types'
 import {
   deleteDraftMessage,
+  deleteDraftMessages,
+  clearOutboxMessages,
   deleteOutboxMessage,
   getAppUpdateStatus,
   loadAccounts,
@@ -78,6 +81,7 @@ import { useMessageActions } from './use-message-actions'
 import { useMessageSelection } from './use-message-selection'
 import { useSyncFeedback } from './use-sync-feedback'
 import { useWritebackStatus } from './use-writeback-status'
+import { DRAFT_PAGE_SIZE, useLocalDrafts } from './use-local-drafts'
 
 export type DialogKind = 'edit' | 'delete' | 'settings' | null
 
@@ -131,11 +135,14 @@ export function MailboxWorkspace({
   )
   const [dialogAccountId, setDialogAccountId] = React.useState<string | null>(null)
   const [warningAccountId, setWarningAccountId] = React.useState<string | null>(null)
-  const [outboxOpen, setOutboxOpen] = React.useState(false)
-  const [outboxView, setOutboxView] = React.useState<'queue' | 'drafts'>('queue')
-  const [outboxAccountId, setOutboxAccountId] = React.useState<number | null>(null)
+  const [workspaceView, setWorkspaceView] = React.useState<'mail' | 'drafts' | 'outbox'>('mail')
+  const draftsOpen = workspaceView === 'drafts'
+  const outboxOpen = workspaceView === 'outbox'
   const [outboxMessages, setOutboxMessages] = React.useState<OutboxMessage[]>([])
   const [outboxPending, setOutboxPending] = React.useState(false)
+  const [outboxLoading, setOutboxLoading] = React.useState(true)
+  const [outboxError, setOutboxError] = React.useState<string | null>(null)
+  const outboxRequestRef = React.useRef(0)
   const [taskMessage, setTaskMessage] = React.useState<Message | null>(null)
   const [outlookImapHelpAccount, setOutlookImapHelpAccount] = React.useState<Account | null>(null)
   const { syncingAccountIds, syncNotice, startSyncing, finishSyncing, setNotice, clearSyncing } =
@@ -212,6 +219,15 @@ export function MailboxWorkspace({
     id: 'onemail-main-layout',
     panelIds: ['accounts', 'messages', 'reader']
   })
+  const draftsLayout = ResizablePrimitive.useDefaultLayout({
+    id: 'onemail-drafts-layout',
+    panelIds: ['accounts', 'drafts']
+  })
+  const outboxLayout = ResizablePrimitive.useDefaultLayout({
+    id: 'onemail-outbox-layout',
+    panelIds: ['accounts', 'outbox']
+  })
+  const activeLayout = draftsOpen ? draftsLayout : outboxOpen ? outboxLayout : mainLayout
 
   const dialogAccount =
     accounts.find((account) => account.id === dialogAccountId) ??
@@ -221,6 +237,8 @@ export function MailboxWorkspace({
     (warningAccountId ? null : undefined)
   const realAccounts = accounts.filter((account) => Boolean(account.accountId))
   const hasAccounts = realAccounts.length > 0
+  const drafts = useLocalDrafts(realAccounts.map((account) => account.id).join(','), !loading)
+  const refreshDrafts = drafts.refresh
   const selectedAccount =
     accounts.find((account) => account.accountId === selectedMailbox.accountId) ??
     accounts.find((account) => account.id === selectedAccountId) ??
@@ -257,9 +275,24 @@ export function MailboxWorkspace({
   const routeMessageId = normalizeRouteId(routeParams.messageId)
 
   const refreshOutbox = React.useCallback(async (): Promise<void> => {
-    const messages = await loadOutboxMessages()
-    setOutboxMessages(messages)
-  }, [])
+    const requestId = ++outboxRequestRef.current
+    setOutboxLoading(true)
+    setOutboxError(null)
+    try {
+      const messages = await loadOutboxMessages()
+      if (requestId === outboxRequestRef.current) setOutboxMessages(messages)
+    } catch (refreshError) {
+      if (requestId === outboxRequestRef.current) {
+        setOutboxError(getErrorMessage(refreshError, t('mailbox.loadOutboxError')))
+      }
+    } finally {
+      if (requestId === outboxRequestRef.current) setOutboxLoading(false)
+    }
+  }, [t])
+
+  const handleRefreshOutbox = React.useCallback((): void => {
+    void refreshOutbox()
+  }, [refreshOutbox])
 
   const refreshVisibleMailbox = React.useCallback(
     async (changedAccountId: number): Promise<void> => {
@@ -302,7 +335,8 @@ export function MailboxWorkspace({
     setSearchKeyword('')
     clearSelection()
     replaceMessages(data.messages, { selectFirst: true })
-  }, [clearSelection, replaceMessages, setLocale])
+    refreshDrafts()
+  }, [clearSelection, refreshDrafts, replaceMessages, setLocale])
 
   React.useEffect(() => {
     let cancelled = false
@@ -365,6 +399,7 @@ export function MailboxWorkspace({
 
   const openRouteTarget = React.useCallback(
     async (accountId: string, messageId?: string): Promise<void> => {
+      setWorkspaceView('mail')
       setError(null)
       setSelectedAccountId(accountId)
       setFilters([])
@@ -534,6 +569,8 @@ export function MailboxWorkspace({
     if (!account.accountId) return
     setError(null)
     await removeAccount(account.accountId)
+    if (drafts.query.accountId === String(account.accountId))
+      drafts.changeQuery({ accountId: 'all' })
     setSettings(await saveSettings({}))
     const nextAccounts = await loadAccounts()
     const nextSelectedAccountId = getNextSelectedAccountId(
@@ -559,6 +596,8 @@ export function MailboxWorkspace({
 
   async function handleRemoveManagedAccounts(accountIds: number[]): Promise<void> {
     await removeAccounts(accountIds)
+    if (accountIds.includes(Number(drafts.query.accountId)))
+      drafts.changeQuery({ accountId: 'all' })
     await reloadInitialData()
   }
 
@@ -685,7 +724,7 @@ export function MailboxWorkspace({
     input: Parameters<typeof saveComposerDraft>[0]
   ): Promise<void> {
     await saveComposerDraft(input)
-    await refreshOutbox()
+    drafts.refresh()
   }
 
   async function handleDiscardComposerDraft(draftId: number): Promise<void> {
@@ -693,8 +732,8 @@ export function MailboxWorkspace({
     try {
       await deleteDraftMessage(draftId)
       discardComposerDraft()
+      drafts.refresh()
       toast.success(t('mailbox.draftDiscarded'))
-      await refreshOutbox()
     } catch (discardError) {
       const messageText = getErrorMessage(discardError, t('mailbox.discardDraftError'))
       setError(messageText)
@@ -723,21 +762,55 @@ export function MailboxWorkspace({
     }
   }
 
-  async function handleDeleteOutbox(message: OutboxMessage): Promise<void> {
+  async function handleDeleteOutbox(message: OutboxMessage): Promise<boolean> {
     setOutboxPending(true)
     setError(null)
     try {
       if (message.status === 'draft') {
         await deleteDraftMessage(message.outboxId)
+        drafts.refresh()
+        toast.success(t('mailbox.draftDeleted'))
       } else {
         await deleteOutboxMessage(message.outboxId)
+        toast.success(t('mailbox.outboxDeleted'))
+        await refreshOutbox()
       }
-      toast.success(t('mailbox.outboxDeleted'))
-      await refreshOutbox()
+      return true
     } catch (deleteError) {
       const messageText = getErrorMessage(deleteError, t('mailbox.deleteOutboxError'))
       setError(messageText)
       toast.error(messageText)
+      return false
+    } finally {
+      setOutboxPending(false)
+    }
+  }
+
+  async function handleDeleteDrafts(outboxIds: number[]): Promise<boolean> {
+    setOutboxPending(true)
+    try {
+      const count = await deleteDraftMessages(outboxIds)
+      drafts.refresh()
+      toast.success(t('mailbox.draftsDeleted', { count }))
+      return true
+    } catch (deleteError) {
+      toast.error(getErrorMessage(deleteError, t('mailbox.deleteOutboxError')))
+      return false
+    } finally {
+      setOutboxPending(false)
+    }
+  }
+
+  async function handleClearOutbox(status: 'sent' | 'failed'): Promise<boolean> {
+    setOutboxPending(true)
+    try {
+      const count = await clearOutboxMessages(status)
+      await refreshOutbox()
+      toast.success(t('mailbox.outboxCleared', { count }))
+      return true
+    } catch (clearError) {
+      toast.error(getErrorMessage(clearError, t('mailbox.clearOutboxError')))
+      return false
     } finally {
       setOutboxPending(false)
     }
@@ -764,7 +837,11 @@ export function MailboxWorkspace({
   async function handleSendComposerDraft(
     input: Parameters<typeof sendComposerDraft>[0]
   ): Promise<void> {
-    await sendComposerDraft(input)
+    try {
+      await sendComposerDraft(input)
+    } finally {
+      drafts.refresh()
+    }
     await refreshMessages(selectedAccountId, filters, searchKeyword)
     void syncAccount(input.accountId)
       .then(async () => {
@@ -839,6 +916,7 @@ export function MailboxWorkspace({
 
   function handleSelectAccount(accountId: string): void {
     if (!accountId) return
+    setWorkspaceView('mail')
     clearSelection()
     navigateToMailboxRoute()
     setSelectedAccountId(accountId)
@@ -898,10 +976,16 @@ export function MailboxWorkspace({
         />
       ) : (
         <ResizablePanelGroup
-          id="onemail-main-layout"
+          id={
+            draftsOpen
+              ? 'onemail-drafts-layout'
+              : outboxOpen
+                ? 'onemail-outbox-layout'
+                : 'onemail-main-layout'
+          }
           orientation="horizontal"
-          defaultLayout={mainLayout.defaultLayout}
-          onLayoutChanged={mainLayout.onLayoutChanged}
+          defaultLayout={activeLayout.defaultLayout}
+          onLayoutChanged={activeLayout.onLayoutChanged}
           className="min-h-0 flex-1 overflow-hidden"
         >
           <ResizablePanel
@@ -916,20 +1000,23 @@ export function MailboxWorkspace({
               syncingAccountIds={syncingAccountIds}
               actionsDisabled={!hasAccounts}
               composePending={composerPending}
-              outboxPending={outboxPending}
+              draftsSelected={draftsOpen}
+              outboxSelected={outboxOpen}
+              draftCount={drafts.result?.draftCount}
               onSelectAccount={handleSelectAccount}
               onCompose={() => {
                 void openComposer('new')
               }}
               onOpenOutbox={() => {
-                setOutboxView('queue')
-                setOutboxAccountId(null)
-                setOutboxOpen(true)
+                clearSelection()
+                navigateToMailboxRoute()
+                setWorkspaceView('outbox')
               }}
-              onOpenDrafts={(account) => {
-                setOutboxView('drafts')
-                setOutboxAccountId(account.accountId ?? null)
-                setOutboxOpen(true)
+              onOpenDrafts={() => {
+                clearSelection()
+                navigateToMailboxRoute()
+                setWorkspaceView('drafts')
+                drafts.refresh()
               }}
               onRefreshAccount={(account) => {
                 void handleRefreshAccount(account)
@@ -952,98 +1039,152 @@ export function MailboxWorkspace({
 
           <ResizableHandle />
 
-          <ResizablePanel
-            id="messages"
-            defaultSize="420px"
-            minSize="320px"
-            groupResizeBehavior="preserve-pixel-size"
-          >
-            <MailList
-              account={selectedAccount}
-              messages={messages}
-              selectedMessageId={selectedMessageId}
-              filters={filters}
-              searchKeyword={searchKeyword}
-              loading={loading}
-              loadingMore={messagePage.loadingMore}
-              hasMore={messagePage.hasMore}
-              error={error}
-              onSelectMessage={handleSelectMessage}
-              onChangeFilters={handleChangeFilters}
-              onChangeSearchKeyword={handleChangeSearchKeyword}
-              onLoadMore={loadMoreMessages}
-              onMarkAllRead={() => {
-                void handleMarkAllRead()
-              }}
-              markAllUnreadCount={selectedMailboxUnread}
-              selectedMessageIds={selectedMessageIds}
-              allVisibleSelected={allVisibleSelected}
-              someVisibleSelected={someVisibleSelected}
-              selectionDisabled={deleting || markingRead}
-              onToggleMessageSelection={toggleMessageSelection}
-              onPrepareContextSelection={selectMessageForContext}
-              onSelectAllVisible={selectAllVisible}
-              onClearSelection={clearSelection}
-              onMarkSelectedRead={() => {
-                void handleMarkSelectedRead()
-              }}
-              onDeleteSelected={() => requestDeleteMessages(selectedMessages)}
-              onMarkMessagesRead={(targetMessages) => {
-                void handleMarkMessagesRead(targetMessages)
-              }}
-              onReplyMessage={(message, replyAll) => {
-                void openComposer(replyAll ? 'reply_all' : 'reply', message)
-              }}
-              onForwardMessages={(targetMessages, asAttachments) => {
-                void openForwardMessages(targetMessages, asAttachments)
-              }}
-              onDeleteMessages={requestDeleteMessages}
-              onAddToBoard={(message) => setTaskMessage(message)}
-            />
-          </ResizablePanel>
-
-          <ResizableHandle />
-
-          <ResizablePanel id="reader" minSize="420px">
-            <article className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
-              {selectedMessage ? (
-                <MailReader
-                  message={selectedMessage}
-                  recipientAddress={selectedMessageAccount?.address ?? selectedAccount.address}
-                  loading={!selectedMessage.detailLoaded || loadingMessageId === selectedMessage.id}
-                  loadingBody={loadingBodyMessageId === selectedMessage.id}
-                  externalImagesBlocked={settings?.externalImagesBlocked ?? true}
-                  downloadingAttachmentIds={downloadingAttachmentIds}
-                  actionPending={composerPending}
-                  deleting={deletingMessageIds.has(selectedMessage.id)}
-                  onLoadBody={() => loadMessageBody(selectedMessage)}
-                  onDownloadAttachment={(attachment) => {
-                    if (attachment.id !== undefined) {
-                      downloadMessageAttachment(selectedMessage, attachment.id)
-                    }
+          {draftsOpen ? (
+            <ResizablePanel id="drafts" minSize="280px">
+              <DraftList
+                accounts={realAccounts}
+                messages={drafts.result?.messages ?? []}
+                totalCount={drafts.result?.totalCount ?? 0}
+                offset={drafts.result?.offset ?? 0}
+                pageSize={DRAFT_PAGE_SIZE}
+                accountId={drafts.query.accountId}
+                keyword={drafts.query.keyword}
+                loading={drafts.loading}
+                pending={outboxPending || composerPending}
+                error={drafts.error}
+                onChangeAccount={(accountId) => drafts.changeQuery({ accountId })}
+                onChangeKeyword={(keyword) => drafts.changeQuery({ keyword })}
+                onChangePage={(offset) => drafts.changeQuery({ offset })}
+                onRefresh={drafts.refresh}
+                onCompose={() => {
+                  void openComposer('new')
+                }}
+                onOpenDraft={openOutboxDraft}
+                onDelete={handleDeleteOutbox}
+                onDeleteMany={handleDeleteDrafts}
+              />
+            </ResizablePanel>
+          ) : outboxOpen ? (
+            <ResizablePanel id="outbox" minSize="280px">
+              <OutboxPanel
+                onClear={handleClearOutbox}
+                pending={outboxPending}
+                loading={outboxLoading}
+                error={outboxError}
+                outboxMessages={outboxMessages}
+                onRefresh={handleRefreshOutbox}
+                onRetry={(message) => {
+                  void handleRetryOutbox(message)
+                }}
+                onDelete={async (message) => {
+                  await handleDeleteOutbox(message)
+                }}
+              />
+            </ResizablePanel>
+          ) : (
+            <>
+              <ResizablePanel
+                id="messages"
+                defaultSize="420px"
+                minSize="320px"
+                groupResizeBehavior="preserve-pixel-size"
+              >
+                <MailList
+                  account={selectedAccount}
+                  messages={messages}
+                  selectedMessageId={selectedMessageId}
+                  filters={filters}
+                  searchKeyword={searchKeyword}
+                  loading={loading}
+                  loadingMore={messagePage.loadingMore}
+                  hasMore={messagePage.hasMore}
+                  error={error}
+                  onSelectMessage={handleSelectMessage}
+                  onChangeFilters={handleChangeFilters}
+                  onChangeSearchKeyword={handleChangeSearchKeyword}
+                  onLoadMore={loadMoreMessages}
+                  onMarkAllRead={() => {
+                    void handleMarkAllRead()
                   }}
-                  onReply={() => {
-                    void openComposer('reply', selectedMessage)
+                  markAllUnreadCount={selectedMailboxUnread}
+                  selectedMessageIds={selectedMessageIds}
+                  allVisibleSelected={allVisibleSelected}
+                  someVisibleSelected={someVisibleSelected}
+                  selectionDisabled={deleting || markingRead}
+                  onToggleMessageSelection={toggleMessageSelection}
+                  onPrepareContextSelection={selectMessageForContext}
+                  onSelectAllVisible={selectAllVisible}
+                  onClearSelection={clearSelection}
+                  onMarkSelectedRead={() => {
+                    void handleMarkSelectedRead()
                   }}
-                  onForward={() => {
-                    void openComposer('forward', selectedMessage)
+                  onDeleteSelected={() => requestDeleteMessages(selectedMessages)}
+                  onMarkMessagesRead={(targetMessages) => {
+                    void handleMarkMessagesRead(targetMessages)
                   }}
-                  onDelete={() => requestDeleteMessages([selectedMessage])}
+                  onReplyMessage={(message, replyAll) => {
+                    void openComposer(replyAll ? 'reply_all' : 'reply', message)
+                  }}
+                  onForwardMessages={(targetMessages, asAttachments) => {
+                    void openForwardMessages(targetMessages, asAttachments)
+                  }}
+                  onDeleteMessages={requestDeleteMessages}
+                  onAddToBoard={(message) => setTaskMessage(message)}
                 />
-              ) : (
-                <div className="flex h-full items-center justify-center p-8 text-xs text-muted-foreground">
-                  {t('mailbox.selectPreview')}
-                </div>
-              )}
-            </article>
-          </ResizablePanel>
+              </ResizablePanel>
+
+              <ResizableHandle />
+
+              <ResizablePanel id="reader" minSize="420px">
+                <article className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+                  {selectedMessage ? (
+                    <MailReader
+                      message={selectedMessage}
+                      recipientAddress={selectedMessageAccount?.address ?? selectedAccount.address}
+                      loading={
+                        !selectedMessage.detailLoaded || loadingMessageId === selectedMessage.id
+                      }
+                      loadingBody={loadingBodyMessageId === selectedMessage.id}
+                      externalImagesBlocked={settings?.externalImagesBlocked ?? true}
+                      downloadingAttachmentIds={downloadingAttachmentIds}
+                      actionPending={composerPending}
+                      deleting={deletingMessageIds.has(selectedMessage.id)}
+                      onLoadBody={() => loadMessageBody(selectedMessage)}
+                      onDownloadAttachment={(attachment) => {
+                        if (attachment.id !== undefined) {
+                          downloadMessageAttachment(selectedMessage, attachment.id)
+                        }
+                      }}
+                      onReply={() => {
+                        void openComposer('reply', selectedMessage)
+                      }}
+                      onForward={() => {
+                        void openComposer('forward', selectedMessage)
+                      }}
+                      onDelete={() => requestDeleteMessages([selectedMessage])}
+                    />
+                  ) : (
+                    <div className="flex h-full items-center justify-center p-8 text-xs text-muted-foreground">
+                      {t('mailbox.selectPreview')}
+                    </div>
+                  )}
+                </article>
+              </ResizablePanel>
+            </>
+          )}
         </ResizablePanelGroup>
       )}
 
       <StatusBar
         settings={settings}
         accountCount={realAccounts.length}
-        messageCount={selectedAccount.messageCount ?? messages.length}
+        messageCount={
+          draftsOpen
+            ? (drafts.result?.totalCount ?? 0)
+            : outboxOpen
+              ? outboxMessages.length
+              : (selectedAccount.messageCount ?? messages.length)
+        }
         unreadCount={realAccounts.reduce((sum, account) => sum + account.unread, 0)}
         syncNotice={syncNotice}
         writebackStatus={writebackStatus}
@@ -1145,31 +1286,6 @@ export function MailboxWorkspace({
         onSend={handleSendComposerDraft}
         onSaveDraft={handleSaveComposerDraft}
         onDiscardDraft={handleDiscardComposerDraft}
-      />
-      <OutboxPanel
-        open={outboxOpen}
-        view={outboxView}
-        pending={outboxPending}
-        outboxMessages={outboxMessages.filter((message) => {
-          if (outboxView !== 'drafts') {
-            return ['queued', 'sending', 'failed'].includes(message.status)
-          }
-          return message.status === 'draft' && message.accountId === outboxAccountId
-        })}
-        onOpenChange={setOutboxOpen}
-        onRefresh={() => {
-          void refreshOutbox().catch((refreshError) => {
-            setError(getErrorMessage(refreshError, t('mailbox.loadOutboxError')))
-          })
-        }}
-        onOpenDraft={(message) => {
-          setOutboxOpen(false)
-          openOutboxDraft(message)
-        }}
-        onRetry={(message) => {
-          void handleRetryOutbox(message)
-        }}
-        onDelete={handleDeleteOutbox}
       />
       <DeleteMessageDialog
         open={Boolean(deleteRequest)}

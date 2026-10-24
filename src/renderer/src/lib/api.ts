@@ -18,6 +18,7 @@ import type {
   CacheCleanupResult,
   AttachmentDownloadResult,
   ComposeDraft as SharedComposeDraft,
+  DraftListQuery,
   MailAccount,
   MailSignature,
   MailSignatureInput,
@@ -530,10 +531,20 @@ export async function saveComposedDraft(input: SendMessageInput): Promise<Outbox
 
 export async function loadOutboxMessages(): Promise<OutboxMessage[]> {
   const messages = await window.api.compose.listOutbox({
-    statuses: ['draft', 'queued', 'failed', 'sending'],
+    statuses: ['queued', 'failed', 'sending'],
     limit: 100
   })
   return messages.map(toUiOutboxMessage)
+}
+
+export async function loadDraftMessages(query: DraftListQuery = {}): Promise<{
+  messages: OutboxMessage[]
+  totalCount: number
+  draftCount: number
+  offset: number
+}> {
+  const result = await window.api.compose.listDrafts(query)
+  return { ...result, messages: result.messages.map(toUiOutboxMessage) }
 }
 
 export async function retryOutboxMessage(outboxId: number): Promise<SendMessageResult> {
@@ -552,6 +563,14 @@ export async function deleteOutboxMessage(outboxId: number): Promise<boolean> {
 
 export async function deleteDraftMessage(outboxId: number): Promise<boolean> {
   return window.api.compose.deleteDraft(outboxId)
+}
+
+export async function deleteDraftMessages(outboxIds: number[]): Promise<number> {
+  return window.api.compose.deleteDrafts(outboxIds)
+}
+
+export async function clearOutboxMessages(status: 'sent' | 'failed'): Promise<number> {
+  return window.api.compose.clearOutbox(status)
 }
 
 export async function deleteMessage(input: DeleteMessageInput): Promise<DeleteMessageResult> {

@@ -8,6 +8,7 @@ import {
 import type {
   BoardTask,
   BoardTaskStatus,
+  BoardTaskUpdate,
   CreateBoardTaskInput,
   TaskReminder
 } from '../../../shared/types'
@@ -152,6 +153,74 @@ export function updateTaskStatuses(taskIds: number[], status: BoardTaskStatus): 
     }
     // Reopening a task never resurrects cancelled or already delivered reminders.
     return listTasks()
+  })
+}
+
+export function updateTask(input: BoardTaskUpdate): BoardTask {
+  assertId(input.taskId, '任务')
+  if (typeof input.subjectSnapshot !== 'string' || typeof input.note !== 'string') {
+    throw new Error('任务标题和事项说明必须是文本。')
+  }
+  if (!Array.isArray(input.reminders)) throw new Error('提醒列表无效。')
+  return transaction((db) => {
+    const task = getTask(input.taskId)
+    if (!task) throw new Error('任务不存在，请刷新看板后重试。')
+    if (
+      (task.status === 'completed' || task.status === 'cancelled') &&
+      input.reminders.length > 0
+    ) {
+      throw new Error('请先将任务移回待办或正在进行，再添加提醒。')
+    }
+    const pending = new Map(
+      task.reminders
+        .filter((reminder) => reminder.status === 'pending')
+        .map((reminder) => [reminder.reminderId, reminder])
+    )
+    const seen = new Set<number>()
+    const now = Date.now()
+    const reminders = input.reminders.map((reminder, index) => {
+      const previous = pending.get(reminder.reminderId)
+      if (reminder.reminderId !== undefined) {
+        assertId(reminder.reminderId, '提醒')
+        if (!previous || seen.has(reminder.reminderId)) {
+          throw new Error('提醒已更新或不属于当前任务，请重新打开编辑窗口。')
+        }
+        seen.add(reminder.reminderId)
+      }
+      // An unchanged overdue reminder stays pending; editing a note must not lose it.
+      const fireAt =
+        previous?.fireAt === reminder.fireAt
+          ? previous.fireAt
+          : validateReminderTime(reminder.fireAt, now, index)
+      return { reminderId: reminder.reminderId, fireAt }
+    })
+    db.prepare(
+      `UPDATE onemail_tasks SET subject_snapshot = :subject, note = :note,
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE task_id = :taskId`
+    ).run({
+      taskId: input.taskId,
+      subject: input.subjectSnapshot.trim(),
+      note: input.note.trim()
+    })
+    for (const [reminderId] of pending) {
+      if (!seen.has(reminderId!)) {
+        db.prepare('DELETE FROM onemail_task_reminders WHERE reminder_id = :reminderId').run({
+          reminderId: reminderId!
+        })
+      }
+    }
+    for (const reminder of reminders) {
+      if (reminder.reminderId !== undefined) {
+        db.prepare(
+          'UPDATE onemail_task_reminders SET fire_at = :fireAt WHERE reminder_id = :reminderId'
+        ).run({ reminderId: reminder.reminderId, fireAt: reminder.fireAt })
+      } else {
+        db.prepare(
+          'INSERT INTO onemail_task_reminders (task_id, fire_at) VALUES (:taskId, :fireAt)'
+        ).run({ taskId: input.taskId, fireAt: reminder.fireAt })
+      }
+    }
+    return getTask(input.taskId)!
   })
 }
 

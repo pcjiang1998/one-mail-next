@@ -1,6 +1,6 @@
 import { BrowserWindow, Notification, powerMonitor } from 'electron'
 
-import type { BoardTask } from '../../shared/types'
+import type { BoardTask, BoardTaskUpdate } from '../../shared/types'
 import {
   createTaskFromMessage,
   deleteTasks,
@@ -8,6 +8,7 @@ import {
   listDueReminders,
   listTasks,
   markReminderFired,
+  updateTask,
   updateTaskStatuses
 } from '../db/repositories/task.repository'
 import type { BoardTaskStatusUpdate, CreateBoardTaskInput } from '../ipc/types'
@@ -88,6 +89,13 @@ export function deleteBoardTasks(taskIds: number[]): number {
   return count
 }
 
+export function updateBoardTask(input: BoardTaskUpdate): BoardTask {
+  const task = updateTask(input)
+  closeTaskNotifications([task.taskId])
+  broadcastTasksChanged()
+  return task
+}
+
 export function broadcastTasksChanged(tasks?: BoardTask[]): void {
   // A closing renderer must not turn a successful, committed mutation into an apparent failure.
   try {
@@ -146,6 +154,7 @@ function checkTaskReminders(): void {
 
 function showReminder(task: BoardTask, reminderId: number): void {
   try {
+    // Board reminders are explicit task alarms, independent of new-mail notification settings.
     const notification = new Notification({
       title: task.subjectSnapshot || 'OneMail 看板提醒',
       body: task.note || `来自 ${task.senderSnapshot || '邮件'} 的待办事项需要处理。`

@@ -322,6 +322,20 @@ export type OutboxListQuery = {
   limit?: number
 }
 
+export type DraftListQuery = {
+  accountId?: number
+  keyword?: string
+  offset?: number
+  limit?: number
+}
+
+export type DraftListResult = {
+  messages: OutboxMessage[]
+  totalCount: number
+  draftCount: number
+  offset: number
+}
+
 export type MessageDeleteMode = 'trash' | 'permanent' | 'local_hide'
 
 export type MessageDeleteInput = {
@@ -812,6 +826,7 @@ export type Contact = {
   note: string
   isStarred: boolean
   emails: ContactEmail[]
+  groups: ContactGroup[]
   createdAt: string
   updatedAt: string
 }
@@ -822,6 +837,17 @@ export type ContactInput = {
   note?: string
   isStarred?: boolean
   emails: ContactEmail[]
+  groupIds?: number[]
+}
+
+export type ContactGroup = {
+  groupId: number
+  name: string
+}
+
+export type ContactGroupInput = {
+  groupId?: number
+  name: string
 }
 
 export type BoardTaskStatus = 'todo' | 'in_progress' | 'completed' | 'cancelled'
@@ -858,6 +884,13 @@ export type CreateBoardTaskInput = {
 export type BoardTaskStatusUpdate = {
   taskIds: number[]
   status: BoardTaskStatus
+}
+
+export type BoardTaskUpdate = {
+  taskId: number
+  subjectSnapshot: string
+  note: string
+  reminders: Array<{ reminderId?: number; fireAt: string }>
 }
 
 export type VCardImportResult = {
@@ -918,8 +951,11 @@ export type OneMailApi = {
     selectAttachments: () => Promise<MailAttachmentInput[]>
     selectInlineImage: () => Promise<InlineImageSelection | null>
     listOutbox: (query?: OutboxListQuery) => Promise<OutboxMessage[]>
+    listDrafts: (query?: DraftListQuery) => Promise<DraftListResult>
     saveDraft: (input: MailSendInput) => Promise<OutboxMessage>
     deleteDraft: (outboxId: number) => Promise<boolean>
+    deleteDrafts: (outboxIds: number[]) => Promise<number>
+    clearOutbox: (status: 'sent' | 'failed') => Promise<number>
     retry: (outboxId: number) => Promise<MailSendResult>
     deleteOutbox: (outboxId: number) => Promise<boolean>
     onSent: (callback: (result: MailSendResult) => void) => () => void
@@ -966,9 +1002,14 @@ export type OneMailApi = {
     clearCache: (accountId?: number) => Promise<number>
   }
   contacts: {
-    list: (search?: string) => Promise<Contact[]>
+    list: (search?: string, groupId?: number) => Promise<Contact[]>
     save: (input: ContactInput) => Promise<Contact>
+    addFromAddress: (input: { displayName: string; email: string }) => Promise<Contact>
+    listGroups: () => Promise<ContactGroup[]>
+    saveGroup: (input: ContactGroupInput) => Promise<ContactGroup>
+    deleteGroup: (groupId: number) => Promise<boolean>
     delete: (contactId: number) => Promise<boolean>
+    deleteMany: (contactIds: number[]) => Promise<number>
     importVCard: () => Promise<VCardImportResult>
     exportVCard: (contactIds?: number[]) => Promise<string | null>
   }
@@ -976,6 +1017,7 @@ export type OneMailApi = {
     list: () => Promise<BoardTask[]>
     createFromMessage: (input: CreateBoardTaskInput) => Promise<BoardTask>
     updateStatus: (input: BoardTaskStatusUpdate) => Promise<BoardTask[]>
+    update: (input: BoardTaskUpdate) => Promise<BoardTask>
     delete: (taskIds: number[]) => Promise<number>
     onChanged: (callback: (tasks: BoardTask[]) => void) => () => void
   }

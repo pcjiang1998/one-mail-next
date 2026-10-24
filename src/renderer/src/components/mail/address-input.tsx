@@ -4,6 +4,8 @@ import { X } from 'lucide-react'
 import type { Contact } from '../../../../shared/types'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
+import { ContactGroupPicker } from './contact-group-picker'
+import { mailboxKey } from '@renderer/lib/mail-addresses'
 import { useI18n } from '@renderer/lib/i18n'
 import { cn } from '@renderer/lib/utils'
 
@@ -34,7 +36,7 @@ export function AddressInput({
   const suggestions = React.useMemo(() => {
     const query = draft.trim().toLocaleLowerCase()
     if (!query) return []
-    const existing = new Set(value.map((item) => item.trim().toLowerCase()))
+    const existing = new Set(value.map(mailboxKey))
     return contacts
       .flatMap((contact) => contact.emails.map((email) => ({ contact, email })))
       .filter(({ contact, email }) => {
@@ -71,7 +73,7 @@ export function AddressInput({
   function commitAddress(address: string): void {
     const item = address.trim()
     if (!isMailbox(item)) return
-    if (value.some((existing) => existing.toLowerCase() === item.toLowerCase())) {
+    if (value.some((existing) => mailboxKey(existing) === mailboxKey(item))) {
       setDraft('')
       return
     }
@@ -86,10 +88,7 @@ export function AddressInput({
     if (items.length === 0) return
     const next = [...value]
     for (const item of items) {
-      if (
-        isMailbox(item) &&
-        !next.some((existing) => existing.toLowerCase() === item.toLowerCase())
-      )
+      if (isMailbox(item) && !next.some((existing) => mailboxKey(existing) === mailboxKey(item)))
         next.push(item)
     }
     if (next.length !== value.length) onChange(next)
@@ -154,6 +153,7 @@ export function AddressInput({
           if (event.key === 'Backspace' && !draft && value.length > 0) onChange(value.slice(0, -1))
         }}
       />
+      <ContactGroupPicker value={value} disabled={disabled} onChange={onChange} />
       {focused && suggestions.length > 0 ? (
         <div
           role="listbox"

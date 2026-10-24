@@ -445,6 +445,22 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_onemail_contact_default_email
 CREATE INDEX IF NOT EXISTS idx_onemail_contact_emails_normalized
   ON onemail_contact_emails(normalized_email);
 
+CREATE TABLE IF NOT EXISTS onemail_contact_groups (
+  group_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL COLLATE NOCASE UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS onemail_contact_group_members (
+  contact_id INTEGER NOT NULL,
+  group_id INTEGER NOT NULL,
+  PRIMARY KEY (contact_id, group_id),
+  FOREIGN KEY (contact_id) REFERENCES onemail_contacts(contact_id) ON DELETE CASCADE,
+  FOREIGN KEY (group_id) REFERENCES onemail_contact_groups(group_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_onemail_contact_group_members_group
+  ON onemail_contact_group_members(group_id, contact_id);
+
 CREATE TABLE IF NOT EXISTS onemail_tasks (
   task_id INTEGER PRIMARY KEY AUTOINCREMENT,
   account_id INTEGER NOT NULL,

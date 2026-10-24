@@ -55,9 +55,14 @@ const api = {
     }
   },
   contacts: {
-    list: (search) => ipcRenderer.invoke('contacts/list', search),
+    list: (search, groupId) => ipcRenderer.invoke('contacts/list', search, groupId),
     save: (input) => ipcRenderer.invoke('contacts/save', input),
+    addFromAddress: (input) => ipcRenderer.invoke('contacts/addFromAddress', input),
+    listGroups: () => ipcRenderer.invoke('contacts/listGroups'),
+    saveGroup: (input) => ipcRenderer.invoke('contacts/saveGroup', input),
+    deleteGroup: (groupId) => ipcRenderer.invoke('contacts/deleteGroup', groupId),
     delete: (contactId) => ipcRenderer.invoke('contacts/delete', contactId),
+    deleteMany: (contactIds) => ipcRenderer.invoke('contacts/deleteMany', contactIds),
     importVCard: () => ipcRenderer.invoke('contacts/importVCard'),
     exportVCard: (contactIds) => ipcRenderer.invoke('contacts/exportVCard', contactIds)
   },
@@ -65,6 +70,7 @@ const api = {
     list: () => ipcRenderer.invoke('tasks/list'),
     createFromMessage: (input) => ipcRenderer.invoke('tasks/createFromMessage', input),
     updateStatus: (input) => ipcRenderer.invoke('tasks/updateStatus', input),
+    update: (input) => ipcRenderer.invoke('tasks/update', input),
     delete: (taskIds) => ipcRenderer.invoke('tasks/delete', taskIds),
     onChanged: (callback): (() => void) => {
       const listener = (_event, tasks): void => callback(tasks)
@@ -81,8 +87,11 @@ const api = {
     selectAttachments: () => ipcRenderer.invoke('compose/selectAttachments'),
     selectInlineImage: () => ipcRenderer.invoke('compose/selectInlineImage'),
     listOutbox: (query) => ipcRenderer.invoke('compose/listOutbox', query),
+    listDrafts: (query) => ipcRenderer.invoke('compose/listDrafts', query),
     saveDraft: (input) => ipcRenderer.invoke('compose/saveDraft', input),
     deleteDraft: (outboxId) => ipcRenderer.invoke('compose/deleteDraft', outboxId),
+    deleteDrafts: (outboxIds) => ipcRenderer.invoke('compose/deleteDrafts', outboxIds),
+    clearOutbox: (status) => ipcRenderer.invoke('compose/clearOutbox', status),
     retry: (outboxId) => ipcRenderer.invoke('compose/retry', outboxId),
     deleteOutbox: (outboxId) => ipcRenderer.invoke('compose/deleteOutbox', outboxId),
     onSent: (callback): (() => void) => {

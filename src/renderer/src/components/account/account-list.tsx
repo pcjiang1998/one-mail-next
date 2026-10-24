@@ -43,6 +43,7 @@ import {
   parseMailboxSelection
 } from '@renderer/lib/api'
 import oneMailIcon from '../../assets/onemail-icon.png'
+import outlookIcon from '../../assets/outlook-icon.ico'
 import { getAccountWarning } from './account-warning'
 
 type AccountListProps = {
@@ -51,11 +52,13 @@ type AccountListProps = {
   syncingAccountIds: Set<string>
   actionsDisabled: boolean
   composePending: boolean
-  outboxPending: boolean
   onSelectAccount: (accountId: string) => void
   onCompose: () => void
   onOpenOutbox: () => void
-  onOpenDrafts: (account: Account) => void
+  onOpenDrafts: () => void
+  draftsSelected?: boolean
+  outboxSelected?: boolean
+  draftCount?: number
   onRefreshAccount: (account: Account) => void
   onEditAccount: (account: Account) => void
   onDeleteAccount: (account: Account) => void
@@ -70,11 +73,13 @@ export function AccountList({
   syncingAccountIds,
   actionsDisabled,
   composePending,
-  outboxPending,
   onSelectAccount,
   onCompose,
   onOpenOutbox,
   onOpenDrafts,
+  draftsSelected = false,
+  outboxSelected = false,
+  draftCount,
   onRefreshAccount,
   onEditAccount,
   onDeleteAccount,
@@ -115,20 +120,6 @@ export function AccountList({
               <Pencil data-icon="inline-start" />
               {t('account.list.compose')}
             </Button>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="icon-sm"
-                  aria-label={t('account.list.outbox')}
-                  disabled={actionsDisabled || outboxPending}
-                  onClick={onOpenOutbox}
-                >
-                  <MailWarning aria-hidden="true" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">{t('account.list.outbox')}</TooltipContent>
-            </Tooltip>
           </div>
         </TooltipProvider>
       </div>
@@ -153,10 +144,23 @@ export function AccountList({
                 看板
               </button>
             </div>
+            <FolderRow
+              label={t('account.folders.localDrafts')}
+              count={draftCount}
+              selected={draftsSelected}
+              icon={<FilePenLine />}
+              onClick={onOpenDrafts}
+            />
+            <FolderRow
+              label={t('account.list.outbox')}
+              selected={outboxSelected}
+              icon={<MailWarning />}
+              onClick={onOpenOutbox}
+            />
             {allAccount ? (
               <AccountRow
                 account={allAccount}
-                selected={selectedAccountId === allAccount.id}
+                selected={!draftsSelected && !outboxSelected && selectedAccountId === allAccount.id}
                 syncing={syncingAccountIds.has(allAccount.id)}
                 onClick={() => onSelectAccount(allAccount.id)}
                 onRefresh={() => onRefreshAccount(allAccount)}
@@ -187,6 +191,8 @@ export function AccountList({
                         <AccountRow
                           account={account}
                           selected={
+                            !draftsSelected &&
+                            !outboxSelected &&
                             mailboxAccountId === account.accountId &&
                             selectedAccountId === account.id
                           }
@@ -205,9 +211,10 @@ export function AccountList({
                     {!collapsed && account.accountId ? (
                       <AccountFolderRows
                         account={account}
-                        selectedAccountId={selectedAccountId}
+                        selectedAccountId={
+                          draftsSelected || outboxSelected ? '' : selectedAccountId
+                        }
                         onSelectAccount={onSelectAccount}
-                        onOpenDrafts={onOpenDrafts}
                       />
                     ) : null}
                   </section>
@@ -226,13 +233,11 @@ export function AccountList({
 function AccountFolderRows({
   account,
   selectedAccountId,
-  onSelectAccount,
-  onOpenDrafts
+  onSelectAccount
 }: {
   account: Account
   selectedAccountId: string
   onSelectAccount: (accountId: string) => void
-  onOpenDrafts: (account: Account) => void
 }): React.JSX.Element {
   const { t } = useI18n()
   const folders = (account.folders ?? []).filter((folder) => folder.role !== 'drafts')
@@ -261,12 +266,6 @@ function AccountFolderRows({
   return (
     <div className="ml-7 flex flex-col gap-0.5 border-l pl-1.5">
       {inbox ? renderRemoteFolder(inbox) : null}
-      <FolderRow
-        label={t('account.folders.localDrafts')}
-        selected={false}
-        icon={<FilePenLine />}
-        onClick={() => onOpenDrafts(account)}
-      />
       {sent ? renderRemoteFolder(sent) : null}
       {junk ? renderRemoteFolder(junk) : null}
       {account.accountId ? (
@@ -303,10 +302,13 @@ function FolderRow({
         selected && 'bg-secondary text-secondary-foreground'
       )}
       onClick={onClick}
+      aria-current={selected ? 'page' : undefined}
     >
       <span className="shrink-0 text-muted-foreground">{icon}</span>
       <span className="min-w-0 flex-1 truncate">{label}</span>
-      {count ? <span className="shrink-0 text-[10px] text-muted-foreground">{count}</span> : null}
+      {count !== undefined ? (
+        <span className="shrink-0 text-[10px] text-muted-foreground">{count}</span>
+      ) : null}
     </button>
   )
 }
@@ -464,13 +466,14 @@ function ProviderLogo({
 }): React.JSX.Element {
   const isUnifiedInbox = account.id === 'all'
   const logo = getProviderLogoMetadata(account.providerKey, account.address)
+  const bundledLogo = logo.domain === 'outlook.com' ? outlookIcon : null
   const [loadedLogo, setLoadedLogo] = React.useState<{ domain: string; src: string | null } | null>(
     null
   )
-  const src = loadedLogo?.domain === logo.domain ? loadedLogo.src : null
+  const src = bundledLogo ?? (loadedLogo?.domain === logo.domain ? loadedLogo.src : null)
 
   React.useEffect(() => {
-    if (isUnifiedInbox) return undefined
+    if (isUnifiedInbox || bundledLogo) return undefined
 
     let cancelled = false
 
@@ -481,7 +484,7 @@ function ProviderLogo({
     return () => {
       cancelled = true
     }
-  }, [logo.domain, isUnifiedInbox])
+  }, [logo.domain, isUnifiedInbox, bundledLogo])
 
   return (
     <span

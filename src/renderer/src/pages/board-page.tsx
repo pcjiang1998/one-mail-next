@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { ArrowLeft, Bell, Check, Clock3, Mail, RefreshCw, Trash2, X } from 'lucide-react'
+import { ArrowLeft, Bell, Check, Clock3, Mail, Pencil, RefreshCw, Trash2, X } from 'lucide-react'
 import { useNavigate } from 'react-router'
 import { toast } from 'sonner'
 
@@ -7,6 +7,13 @@ import type { BoardTask, BoardTaskStatus } from '../../../shared/types'
 import { ResponsiveDialog } from '@renderer/components/responsive-dialog'
 import { Button } from '@renderer/components/ui/button'
 import { Checkbox } from '@renderer/components/ui/checkbox'
+import { AddTaskDialog } from '@renderer/components/mail/add-task-dialog'
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger
+} from '@renderer/components/ui/context-menu'
 import { cn } from '@renderer/lib/utils'
 
 const columns: Array<{ status: BoardTaskStatus; label: string; tone: string }> = [
@@ -24,6 +31,9 @@ export function BoardPage(): React.JSX.Element {
   const [error, setError] = React.useState<string | null>(null)
   const [deleteIds, setDeleteIds] = React.useState<number[] | null>(null)
   const [deleteError, setDeleteError] = React.useState<string | null>(null)
+  const [editing, setEditing] = React.useState<BoardTask | null>(null)
+  const [dragTarget, setDragTarget] = React.useState<BoardTaskStatus | null>(null)
+  const dragging = React.useRef<number[] | null>(null)
   const [desktopSupported, setDesktopSupported] = React.useState<boolean | null>(null)
   const mounted = React.useRef(false)
   const mutating = React.useRef(false)
@@ -80,12 +90,16 @@ export function BoardPage(): React.JSX.Element {
   }, [applyTasks, loadTasks])
 
   async function moveSelected(status: BoardTaskStatus): Promise<void> {
-    if (selected.size === 0 || mutating.current) return
+    await moveTasks([...selected], status)
+  }
+
+  async function moveTasks(taskIds: number[], status: BoardTaskStatus): Promise<void> {
+    if (taskIds.length === 0 || mutating.current) return
     mutating.current = true
     setBusy(true)
     const version = revision.current
     try {
-      const nextTasks = await window.api.tasks.updateStatus({ taskIds: [...selected], status })
+      const nextTasks = await window.api.tasks.updateStatus({ taskIds, status })
       if (!mounted.current) return
       if (version === revision.current) applyTasks(nextTasks)
       setSelected(new Set())
@@ -133,13 +147,13 @@ export function BoardPage(): React.JSX.Element {
 
   return (
     <main className="flex h-screen min-h-0 flex-col bg-background text-foreground">
-      <header className="flex shrink-0 items-center gap-2 border-b px-4 py-2">
+      <header className="app-titlebar app-drag-region flex h-12 shrink-0 items-center gap-2 border-b py-2">
         <Button variant="ghost" size="icon-sm" aria-label="返回邮箱" onClick={() => navigate('/')}>
           <ArrowLeft />
         </Button>
         <div className="min-w-0 flex-1">
           <h1 className="text-sm font-semibold">看板</h1>
-          <p className="text-xs text-muted-foreground">在邮件列表右键菜单中添加待办事项</p>
+          <p className="truncate text-xs text-muted-foreground">在邮件列表右键菜单中添加待办事项</p>
         </div>
         <Button
           variant="ghost"
@@ -243,9 +257,32 @@ export function BoardPage(): React.JSX.Element {
               <section
                 key={column.status}
                 aria-label={column.label}
+                onDragOver={(event) => {
+                  if (!dragging.current || busy) return
+                  event.preventDefault()
+                  event.dataTransfer.dropEffect = 'move'
+                  setDragTarget(column.status)
+                }}
+                onDragLeave={(event) => {
+                  if (
+                    !(event.relatedTarget instanceof Node) ||
+                    !event.currentTarget.contains(event.relatedTarget)
+                  ) {
+                    setDragTarget(null)
+                  }
+                }}
+                onDrop={(event) => {
+                  if (!dragging.current || busy) return
+                  event.preventDefault()
+                  const ids = dragging.current
+                  dragging.current = null
+                  setDragTarget(null)
+                  void moveTasks(ids, column.status)
+                }}
                 className={cn(
                   'flex min-h-0 flex-col overflow-hidden rounded-md border border-t-2 bg-background',
-                  column.tone
+                  column.tone,
+                  dragTarget === column.status && 'bg-accent ring-2 ring-ring'
                 )}
               >
                 <div className="flex items-center justify-between border-b px-3 py-2">
@@ -260,6 +297,25 @@ export function BoardPage(): React.JSX.Element {
                       selected={selected.has(task.taskId)}
                       disabled={busy}
                       onToggle={() => toggleTask(task.taskId)}
+                      onEdit={() => setEditing(task)}
+                      onDelete={() => {
+                        setDeleteError(null)
+                        setDeleteIds([task.taskId])
+                      }}
+                      onDragStart={(event) => {
+                        const ids = selected.has(task.taskId) ? [...selected] : [task.taskId]
+                        dragging.current = ids
+                        event.dataTransfer.effectAllowed = 'move'
+                        event.dataTransfer.setData(
+                          'application/x-onemail-tasks',
+                          JSON.stringify(ids)
+                        )
+                        if (!selected.has(task.taskId)) setSelected(new Set(ids))
+                      }}
+                      onDragEnd={() => {
+                        dragging.current = null
+                        setDragTarget(null)
+                      }}
                       onOpen={() => {
                         if (task.accountId && task.messageId)
                           navigate(`/${task.accountId}/${task.messageId}`)
@@ -276,6 +332,15 @@ export function BoardPage(): React.JSX.Element {
         </div>
       </div>
 
+      <AddTaskDialog
+        message={null}
+        task={editing ?? undefined}
+        open={editing !== null}
+        onOpenChange={(open) => {
+          if (!open) setEditing(null)
+        }}
+        onCreated={loadTasks}
+      />
       <ResponsiveDialog
         open={deleteIds !== null}
         onOpenChange={(open) => {
@@ -309,106 +374,136 @@ function TaskCard({
   selected,
   disabled,
   onToggle,
-  onOpen
+  onOpen,
+  onEdit,
+  onDelete,
+  onDragStart,
+  onDragEnd
 }: {
   task: BoardTask
   selected: boolean
   disabled: boolean
   onToggle: () => void
   onOpen: () => void
+  onEdit: () => void
+  onDelete: () => void
+  onDragStart: React.DragEventHandler<HTMLElement>
+  onDragEnd: React.DragEventHandler<HTMLElement>
 }): React.JSX.Element {
   const pending = task.reminders.filter((reminder) => reminder.status === 'pending').length
   const fired = task.reminders.filter((reminder) => reminder.status === 'fired').length
   const cancelled = task.reminders.filter((reminder) => reminder.status === 'cancelled').length
   const canOpen = Boolean(task.accountId && task.messageId)
   return (
-    <article className={cn('rounded-md border bg-card p-3', selected && 'ring-2 ring-ring')}>
-      <div className="flex items-start gap-2">
-        <Checkbox
-          disabled={disabled}
-          checked={selected}
-          aria-label={`选择 ${task.subjectSnapshot || '无主题邮件'}`}
-          onCheckedChange={onToggle}
-        />
-        <button
-          type="button"
-          className="min-w-0 flex-1 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
-          disabled={!canOpen}
-          aria-label={
-            canOpen ? `打开邮件：${task.subjectSnapshot || '无主题邮件'}` : '原邮件已不可用'
-          }
-          onClick={onOpen}
+    <ContextMenu>
+      <ContextMenuTrigger asChild disabled={disabled}>
+        <article
+          draggable={!disabled}
+          onDragStart={onDragStart}
+          onDragEnd={onDragEnd}
+          className={cn(
+            'cursor-grab rounded-md border bg-card p-3 active:cursor-grabbing',
+            selected && 'ring-2 ring-ring'
+          )}
         >
-          <div className="flex items-center gap-1 text-xs text-muted-foreground">
-            <Mail className="size-3 shrink-0" />
-            <span className="truncate">{task.accountEmail ?? '邮件快照'}</span>
+          <div className="flex items-start gap-2">
+            <Checkbox
+              disabled={disabled}
+              checked={selected}
+              aria-label={`选择 ${task.subjectSnapshot || '无主题邮件'}`}
+              onCheckedChange={onToggle}
+            />
+            <button
+              type="button"
+              className="min-w-0 flex-1 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
+              disabled={disabled || !canOpen}
+              aria-label={
+                canOpen ? `打开邮件：${task.subjectSnapshot || '无主题邮件'}` : '原邮件已不可用'
+              }
+              onClick={onOpen}
+            >
+              <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                <Mail className="size-3 shrink-0" />
+                <span className="truncate">{task.accountEmail ?? '邮件快照'}</span>
+              </div>
+              <h3 className="mt-1 line-clamp-2 break-words text-sm font-medium">
+                {task.subjectSnapshot || '无主题邮件'}
+              </h3>
+              <p className="mt-1 truncate text-xs text-muted-foreground">
+                {task.senderSnapshot || '未知发件人'}
+              </p>
+              {!canOpen ? (
+                <p className="mt-1 text-xs text-muted-foreground">原邮件已不可用，保留任务快照</p>
+              ) : null}
+            </button>
           </div>
-          <h3 className="mt-1 line-clamp-2 break-words text-sm font-medium">
-            {task.subjectSnapshot || '无主题邮件'}
-          </h3>
-          <p className="mt-1 truncate text-xs text-muted-foreground">
-            {task.senderSnapshot || '未知发件人'}
-          </p>
-          {!canOpen ? (
-            <p className="mt-1 text-xs text-muted-foreground">原邮件已不可用，保留任务快照</p>
+          {task.note ? (
+            <p className="mt-3 whitespace-pre-wrap break-words border-t pt-2 text-xs leading-5 text-muted-foreground">
+              {task.note}
+            </p>
           ) : null}
-        </button>
-      </div>
-      {task.note ? (
-        <p className="mt-3 whitespace-pre-wrap break-words border-t pt-2 text-xs leading-5 text-muted-foreground">
-          {task.note}
-        </p>
-      ) : null}
-      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        {task.status === 'in_progress' ? (
-          <span className="flex items-center gap-1">
-            <Clock3 className="size-3" />
-            正在进行
-          </span>
-        ) : null}
-        {task.status === 'completed' ? (
-          <span className="flex items-center gap-1">
-            <Check className="size-3" />
-            已完成
-          </span>
-        ) : null}
-        {task.status === 'cancelled' ? (
-          <span className="flex items-center gap-1">
-            <X className="size-3" />
-            已取消
-          </span>
-        ) : null}
-      </div>
-      {task.reminders.length > 0 ? (
-        <details className="mt-2 text-xs text-muted-foreground">
-          <summary className="cursor-pointer rounded-sm leading-5 focus-visible:outline-2 focus-visible:outline-ring">
-            <Bell className="mr-1 inline size-3" />
-            {[
-              pending ? `${pending} 条待通知` : '',
-              fired ? `${fired} 条已通知` : '',
-              cancelled ? `${cancelled} 条已停止` : ''
-            ]
-              .filter(Boolean)
-              .join('，')}
-          </summary>
-          <ul className="mt-1 space-y-2 border-l pl-3">
-            {task.reminders.map((reminder, index) => (
-              <li key={reminder.reminderId ?? index} className="leading-5">
-                <time dateTime={reminder.fireAt}>{formatTime(reminder.fireAt)}</time>
-                <span className="ml-1">
-                  {reminder.status === 'fired'
-                    ? '已通知'
-                    : reminder.status === 'cancelled'
-                      ? '已停止'
-                      : '待通知'}
-                </span>
-                {reminder.firedAt ? <p>通知显示于 {formatTime(reminder.firedAt)}</p> : null}
-              </li>
-            ))}
-          </ul>
-        </details>
-      ) : null}
-    </article>
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            {task.status === 'in_progress' ? (
+              <span className="flex items-center gap-1">
+                <Clock3 className="size-3" />
+                正在进行
+              </span>
+            ) : null}
+            {task.status === 'completed' ? (
+              <span className="flex items-center gap-1">
+                <Check className="size-3" />
+                已完成
+              </span>
+            ) : null}
+            {task.status === 'cancelled' ? (
+              <span className="flex items-center gap-1">
+                <X className="size-3" />
+                已取消
+              </span>
+            ) : null}
+          </div>
+          {task.reminders.length > 0 ? (
+            <details className="mt-2 text-xs text-muted-foreground">
+              <summary className="cursor-pointer rounded-sm leading-5 focus-visible:outline-2 focus-visible:outline-ring">
+                <Bell className="mr-1 inline size-3" />
+                {[
+                  pending ? `${pending} 条待通知` : '',
+                  fired ? `${fired} 条已通知` : '',
+                  cancelled ? `${cancelled} 条已停止` : ''
+                ]
+                  .filter(Boolean)
+                  .join('，')}
+              </summary>
+              <ul className="mt-1 space-y-2 border-l pl-3">
+                {task.reminders.map((reminder, index) => (
+                  <li key={reminder.reminderId ?? index} className="leading-5">
+                    <time dateTime={reminder.fireAt}>{formatTime(reminder.fireAt)}</time>
+                    <span className="ml-1">
+                      {reminder.status === 'fired'
+                        ? '已通知'
+                        : reminder.status === 'cancelled'
+                          ? '已停止'
+                          : '待通知'}
+                    </span>
+                    {reminder.firedAt ? <p>通知显示于 {formatTime(reminder.firedAt)}</p> : null}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          ) : null}
+        </article>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem disabled={disabled} onSelect={onEdit}>
+          <Pencil />
+          编辑事项和通知时间
+        </ContextMenuItem>
+        <ContextMenuItem disabled={disabled} variant="destructive" onSelect={onDelete}>
+          <Trash2 />
+          删除任务
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }
 

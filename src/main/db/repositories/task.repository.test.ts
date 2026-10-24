@@ -22,6 +22,7 @@ import {
   createTaskFromMessage,
   getTask,
   markReminderFired,
+  updateTask,
   updateTaskStatuses
 } from './task.repository'
 
@@ -115,6 +116,91 @@ describe('task repository', () => {
     updateTaskStatuses([task.taskId], 'todo')
 
     expect(getTask(task.taskId)?.reminders[0]?.status).toBe('cancelled')
+  })
+
+  it('edits task details and pending reminder times while preserving delivered history', () => {
+    const source = seedMessage()
+    const task = createTaskFromMessage({
+      ...source,
+      reminders: [{ fireAt: futureTime(60_000) }, { fireAt: futureTime(120_000) }]
+    })
+    markReminderFired(task.reminders[0].reminderId!)
+    const updated = updateTask({
+      taskId: task.taskId,
+      subjectSnapshot: '新任务标题',
+      note: '修改后的备注',
+      reminders: [
+        { reminderId: task.reminders[1].reminderId, fireAt: futureTime(180_000) },
+        { fireAt: futureTime(240_000) }
+      ]
+    })
+    expect(updated).toMatchObject({ subjectSnapshot: '新任务标题', note: '修改后的备注' })
+    expect(updated.reminders.map((reminder) => reminder.status)).toEqual([
+      'fired',
+      'pending',
+      'pending'
+    ])
+    expect(updated.reminders[1]).toMatchObject({
+      reminderId: task.reminders[1].reminderId,
+      fireAt: futureTime(180_000)
+    })
+    expect(
+      updateTask({
+        taskId: task.taskId,
+        subjectSnapshot: updated.subjectSnapshot,
+        note: updated.note,
+        reminders: []
+      }).reminders.map((reminder) => reminder.status)
+    ).toEqual(['fired'])
+  })
+
+  it('preserves unchanged overdue reminders but rolls back invalid replacement times', () => {
+    const task = createTaskFromMessage({
+      ...seedMessage(),
+      reminders: [{ fireAt: futureTime(60_000) }]
+    })
+    vi.advanceTimersByTime(120_000)
+    const saved = updateTask({
+      taskId: task.taskId,
+      subjectSnapshot: '标题',
+      note: '只修改备注',
+      reminders: task.reminders
+    })
+    expect(saved.reminders).toEqual(task.reminders)
+    expect(() =>
+      updateTask({
+        taskId: task.taskId,
+        subjectSnapshot: '不应保存',
+        note: '',
+        reminders: [{ fireAt: '2025-01-01T00:00:00Z' }]
+      })
+    ).toThrow('必须晚于当前时间')
+    expect(getTask(task.taskId)).toEqual(saved)
+  })
+
+  it('rejects editing a delivered reminder or adding alarms to a completed task', () => {
+    const task = createTaskFromMessage({
+      ...seedMessage(),
+      reminders: [{ fireAt: futureTime(60_000) }]
+    })
+    markReminderFired(task.reminders[0].reminderId!)
+    expect(() =>
+      updateTask({
+        taskId: task.taskId,
+        subjectSnapshot: '',
+        note: '',
+        reminders: task.reminders
+      })
+    ).toThrow('提醒已更新')
+    updateTaskStatuses([task.taskId], 'completed')
+    expect(() =>
+      updateTask({
+        taskId: task.taskId,
+        subjectSnapshot: '',
+        note: '',
+        reminders: [{ fireAt: futureTime(120_000) }]
+      })
+    ).toThrow('先将任务移回')
   })
 })
 

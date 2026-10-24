@@ -1,14 +1,17 @@
 import * as React from 'react'
-import { ArrowLeft, Download, Plus, Search, Star, Trash2, Upload } from 'lucide-react'
+import { ArrowLeft, Download, FolderCog, Plus, Search, Star, Trash2, Upload } from 'lucide-react'
 import { useBlocker, useNavigate } from 'react-router'
 import { toast } from 'sonner'
 
-import type { Contact, ContactInput } from '../../../shared/types'
+import type { Contact, ContactGroup, ContactInput } from '../../../shared/types'
+import { ContactGroupsDialog } from '@renderer/components/contacts/contact-groups-dialog'
 import { ResponsiveDialog } from '@renderer/components/responsive-dialog'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Textarea } from '@renderer/components/ui/textarea'
 import { Switch } from '@renderer/components/ui/switch'
+import { Checkbox } from '@renderer/components/ui/checkbox'
+import { NativeSelect, NativeSelectOption } from '@renderer/components/ui/native-select'
 import { cn } from '@renderer/lib/utils'
 
 type DraftContact = Omit<ContactInput, 'emails'> & {
@@ -29,12 +32,14 @@ function createEditor(contact?: Contact): Editor {
         displayName: contact.displayName,
         note: contact.note,
         isStarred: contact.isStarred,
+        groupIds: contact.groups.map((group) => group.groupId),
         emails: contact.emails.map((email) => ({ ...email, key: newEmail().key }))
       }
     : {
         displayName: '',
         note: '',
         isStarred: false,
+        groupIds: [],
         emails: [{ ...newEmail(), isDefault: true }]
       }
   return { draft, saved: draft }
@@ -46,6 +51,7 @@ function toInput(draft: DraftContact): ContactInput {
     displayName: draft.displayName,
     note: draft.note,
     isStarred: draft.isStarred,
+    groupIds: draft.groupIds,
     emails: draft.emails.map((email) => ({
       email: email.email,
       label: email.label,
@@ -77,6 +83,9 @@ function validateDraft(draft: DraftContact): void {
 export function ContactsPage(): React.JSX.Element {
   const navigate = useNavigate()
   const [contacts, setContacts] = React.useState<Contact[]>([])
+  const [groups, setGroups] = React.useState<ContactGroup[]>([])
+  const [groupFilter, setGroupFilter] = React.useState('all')
+  const [groupsOpen, setGroupsOpen] = React.useState(false)
   const [search, setSearch] = React.useState('')
   const [editor, setEditor] = React.useState<Editor>(() => createEditor())
   const [loading, setLoading] = React.useState(true)
@@ -86,6 +95,8 @@ export function ContactsPage(): React.JSX.Element {
   const [notice, setNotice] = React.useState<Notice | null>(null)
   const [busy, setBusy] = React.useState<'save' | 'delete' | 'import' | 'export' | null>(null)
   const [deleteOpen, setDeleteOpen] = React.useState(false)
+  const [deleteIds, setDeleteIds] = React.useState<number[]>([])
+  const [selectedIds, setSelectedIds] = React.useState<Set<number>>(() => new Set())
   const [pendingAction, setPendingAction] = React.useState<(() => void) | null>(null)
   const requestId = React.useRef(0)
   const choseEditor = React.useRef(false)
@@ -98,9 +109,13 @@ export function ContactsPage(): React.JSX.Element {
     const request = ++requestId.current
     setLoading(true)
     try {
-      const next = await window.api.contacts.list()
+      const [next, nextGroups] = await Promise.all([
+        window.api.contacts.list(),
+        window.api.contacts.listGroups()
+      ])
       if (request !== requestId.current) return
       setContacts(next)
+      setGroups(nextGroups)
       setLoadError(null)
       if (selectFirst && next[0] && !choseEditor.current) {
         setEditor((current) => (isDirty(current) ? current : createEditor(next[0])))
@@ -135,6 +150,13 @@ export function ContactsPage(): React.JSX.Element {
   const filteredContacts = React.useMemo(() => {
     const query = search.trim().toLocaleLowerCase()
     return contacts
+      .filter(
+        (contact) =>
+          groupFilter === 'all' ||
+          (groupFilter === 'ungrouped'
+            ? contact.groups.length === 0
+            : contact.groups.some((group) => group.groupId === Number(groupFilter)))
+      )
       .filter((contact) =>
         [contact.displayName, contact.note, ...contact.emails.map((email) => email.email)].some(
           (value) => value.toLocaleLowerCase().includes(query)
@@ -146,7 +168,27 @@ export function ContactsPage(): React.JSX.Element {
           a.displayName.localeCompare(b.displayName) ||
           a.contactId - b.contactId
       )
-  }, [contacts, search])
+  }, [contacts, search, groupFilter])
+  const selectedContacts = filteredContacts.filter((contact) => selectedIds.has(contact.contactId))
+  const allSelected =
+    filteredContacts.length > 0 && selectedContacts.length === filteredContacts.length
+
+  async function refreshGroups(): Promise<void> {
+    const [nextGroups, nextContacts] = await Promise.all([
+      window.api.contacts.listGroups(),
+      window.api.contacts.list()
+    ])
+    setGroups(nextGroups)
+    setContacts(nextContacts)
+    const ids = new Set(nextGroups.map((group) => group.groupId))
+    setEditor((current) => ({
+      draft: { ...current.draft, groupIds: current.draft.groupIds?.filter((id) => ids.has(id)) },
+      saved: { ...current.saved, groupIds: current.saved.groupIds?.filter((id) => ids.has(id)) }
+    }))
+    if (groupFilter !== 'all' && groupFilter !== 'ungrouped' && !ids.has(Number(groupFilter))) {
+      setGroupFilter('all')
+    }
+  }
 
   function updateDraft(update: (current: DraftContact) => DraftContact): void {
     choseEditor.current = true
@@ -206,17 +248,24 @@ export function ContactsPage(): React.JSX.Element {
   }
 
   async function remove(): Promise<void> {
-    if (locked || draft.contactId === undefined) return
+    if (locked || deleteIds.length === 0) return
     setBusy('delete')
     setDeleteError(null)
     try {
-      const deleted = await window.api.contacts.delete(draft.contactId)
-      if (!deleted) throw new Error('联系人不存在，可能已被删除。请刷新列表后重试。')
-      setContacts((current) => current.filter((item) => item.contactId !== draft.contactId))
-      setEditor(createEditor())
-      setEditorError(null)
+      if (deleteIds.length === 1) {
+        const deleted = await window.api.contacts.delete(deleteIds[0])
+        if (!deleted) throw new Error('联系人不存在，可能已被删除。请刷新列表后重试。')
+      } else {
+        await window.api.contacts.deleteMany(deleteIds)
+      }
+      setContacts((current) => current.filter((item) => !deleteIds.includes(item.contactId)))
+      if (draft.contactId !== undefined && deleteIds.includes(draft.contactId)) {
+        setEditor(createEditor())
+        setEditorError(null)
+      }
+      setSelectedIds(new Set())
       setDeleteOpen(false)
-      toast.success('联系人已删除。')
+      toast.success(`已删除 ${deleteIds.length} 个联系人。`)
     } catch (error) {
       setDeleteError(errorMessage(error, '删除联系人失败。'))
     } finally {
@@ -276,7 +325,7 @@ export function ContactsPage(): React.JSX.Element {
 
   return (
     <main className="flex h-screen min-h-0 flex-col bg-background text-foreground">
-      <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-2 border-b px-4 py-2">
+      <header className="app-titlebar app-drag-region flex h-12 shrink-0 items-center gap-2 border-b">
         <Button
           variant="ghost"
           size="icon-sm"
@@ -288,8 +337,15 @@ export function ContactsPage(): React.JSX.Element {
         </Button>
         <div className="min-w-0 flex-1">
           <h1 className="text-sm font-semibold">联系人</h1>
-          <p className="text-xs text-muted-foreground">所有账号共用的联系人</p>
+          <p className="hidden truncate text-xs text-muted-foreground sm:block">
+            所有账号共用的联系人
+          </p>
         </div>
+      </header>
+      <div
+        className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-2"
+        aria-label="联系人操作"
+      >
         <Button
           variant="outline"
           size="sm"
@@ -314,7 +370,30 @@ export function ContactsPage(): React.JSX.Element {
           <Plus data-icon="inline-start" />
           新建
         </Button>
-      </header>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={locked || selectedContacts.length === 0}
+          onClick={() => {
+            setDeleteIds(selectedContacts.map((contact) => contact.contactId))
+            setDeleteError(null)
+            setDeleteOpen(true)
+          }}
+        >
+          <Trash2 data-icon="inline-start" />
+          删除所选联系人
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="管理分组"
+          title="管理分组"
+          disabled={locked}
+          onClick={() => setGroupsOpen(true)}
+        >
+          <FolderCog />
+        </Button>
+      </div>
       {notice ? (
         <p
           role={notice.kind === 'error' ? 'alert' : 'status'}
@@ -337,9 +416,49 @@ export function ContactsPage(): React.JSX.Element {
                 aria-label="搜索联系人"
                 maxLength={1000}
                 value={search}
-                onChange={(event) => setSearch(event.target.value)}
+                onChange={(event) => {
+                  setSelectedIds(new Set())
+                  setSearch(event.target.value)
+                }}
                 placeholder="搜索姓名、邮箱或备注"
               />
+            </div>
+            <NativeSelect
+              className="mt-2 w-full"
+              aria-label="按联系人分组筛选"
+              value={groupFilter}
+              onChange={(event) => {
+                setSelectedIds(new Set())
+                setGroupFilter(event.target.value)
+              }}
+            >
+              <NativeSelectOption value="all">全部分组</NativeSelectOption>
+              <NativeSelectOption value="ungrouped">未分组</NativeSelectOption>
+              {groups.map((group) => (
+                <NativeSelectOption key={group.groupId} value={String(group.groupId)}>
+                  {group.name}
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+              <label className="flex items-center gap-2">
+                <Checkbox
+                  aria-label="全选筛选结果"
+                  disabled={locked || Boolean(loadError) || filteredContacts.length === 0}
+                  checked={
+                    allSelected ? true : selectedContacts.length > 0 ? 'indeterminate' : false
+                  }
+                  onCheckedChange={(checked) =>
+                    setSelectedIds(
+                      checked === true
+                        ? new Set(filteredContacts.map((contact) => contact.contactId))
+                        : new Set()
+                    )
+                  }
+                />
+                全选筛选结果
+              </label>
+              <span className="text-muted-foreground">已选 {selectedContacts.length} 人</span>
             </div>
           </div>
           <div className="p-2">
@@ -367,43 +486,69 @@ export function ContactsPage(): React.JSX.Element {
               const defaultEmail =
                 contact.emails.find((email) => email.isDefault) ?? contact.emails[0]
               return (
-                <button
-                  key={contact.contactId}
-                  type="button"
-                  disabled={locked}
-                  aria-pressed={contact.contactId === draft.contactId}
-                  onClick={() => changeEditor(contact)}
-                  className={cn(
-                    'flex w-full items-start gap-2 rounded-md px-3 py-2 text-left outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
-                    contact.contactId === draft.contactId && 'bg-secondary'
-                  )}
-                >
-                  <div
-                    className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary"
-                    aria-hidden="true"
+                <div key={contact.contactId} className="flex min-w-0 items-center gap-1">
+                  <Checkbox
+                    className="ml-2 mr-1"
+                    aria-label={`选择联系人：${contact.displayName || defaultEmail?.email}`}
+                    checked={selectedIds.has(contact.contactId)}
+                    disabled={locked}
+                    onCheckedChange={(checked) =>
+                      setSelectedIds((current) => {
+                        const next = new Set(current)
+                        if (checked === true) next.add(contact.contactId)
+                        else next.delete(contact.contactId)
+                        return next
+                      })
+                    }
+                  />
+                  <button
+                    type="button"
+                    disabled={locked}
+                    aria-pressed={contact.contactId === draft.contactId}
+                    onClick={() => changeEditor(contact)}
+                    className={cn(
+                      'flex min-w-0 flex-1 items-start gap-2 rounded-md px-3 py-2 text-left outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50',
+                      contact.contactId === draft.contactId && 'bg-secondary'
+                    )}
                   >
-                    {(contact.displayName || defaultEmail?.email || '?').slice(0, 1).toUpperCase()}
-                  </div>
-                  <span className="min-w-0 flex-1">
-                    <span className="flex items-center gap-1 text-sm font-medium">
-                      <span className="truncate">{contact.displayName || defaultEmail?.email}</span>
-                      {contact.isStarred ? (
-                        <Star
-                          aria-label="星标"
-                          className="size-3 shrink-0 fill-primary text-primary"
-                        />
+                    <div
+                      className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary"
+                      aria-hidden="true"
+                    >
+                      {(contact.displayName || defaultEmail?.email || '?')
+                        .slice(0, 1)
+                        .toUpperCase()}
+                    </div>
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-1 text-sm font-medium">
+                        <span className="truncate">
+                          {contact.displayName || defaultEmail?.email}
+                        </span>
+                        {contact.isStarred ? (
+                          <Star
+                            aria-label="星标"
+                            className="size-3 shrink-0 fill-primary text-primary"
+                          />
+                        ) : null}
+                      </span>
+                      <span className="block truncate text-xs text-muted-foreground">
+                        {defaultEmail?.email}
+                      </span>
+                      {contact.groups.length > 0 ? (
+                        <span className="block truncate text-xs text-muted-foreground">
+                          {contact.groups.map((group) => group.name).join(' · ')}
+                        </span>
                       ) : null}
                     </span>
-                    <span className="block truncate text-xs text-muted-foreground">
-                      {defaultEmail?.email}
-                    </span>
-                  </span>
-                </button>
+                  </button>
+                </div>
               )
             })}
             {!loading && !loadError && filteredContacts.length === 0 ? (
               <p className="p-4 text-center text-xs text-muted-foreground">
-                {search.trim() ? '没有匹配的联系人。' : '还没有联系人，可以新建或导入。'}
+                {search.trim() || groupFilter !== 'all'
+                  ? '没有匹配的联系人。'
+                  : '还没有联系人，可以新建或导入。'}
               </p>
             ) : null}
           </div>
@@ -446,6 +591,7 @@ export function ContactsPage(): React.JSX.Element {
                       size="icon-sm"
                       aria-label="删除联系人"
                       onClick={() => {
+                        setDeleteIds([draft.contactId!])
                         setDeleteError(null)
                         setDeleteOpen(true)
                       }}
@@ -453,6 +599,27 @@ export function ContactsPage(): React.JSX.Element {
                       <Trash2 />
                     </Button>
                   ) : null}
+                </div>
+              </div>
+              <div className="grid gap-2">
+                <span className="text-xs font-medium">联系人分组</span>
+                <div className="flex flex-wrap gap-3">
+                  {groups.map((group) => (
+                    <label key={group.groupId} className="flex min-w-0 items-center gap-2 text-xs">
+                      <Checkbox
+                        checked={draft.groupIds?.includes(group.groupId) === true}
+                        onCheckedChange={(checked) =>
+                          updateDraft((current) => ({
+                            ...current,
+                            groupIds: checked
+                              ? [...(current.groupIds ?? []), group.groupId]
+                              : current.groupIds?.filter((id) => id !== group.groupId)
+                          }))
+                        }
+                      />
+                      <span className="break-words">{group.name}</span>
+                    </label>
+                  ))}
                 </div>
               </div>
               <label className="grid gap-1.5 text-xs font-medium">
@@ -485,9 +652,6 @@ export function ContactsPage(): React.JSX.Element {
                     添加邮箱
                   </Button>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  只设置一个默认地址；写信时每次选择一个邮箱，不会自动群发。
-                </p>
                 {draft.emails.map((email, index) => (
                   <div key={email.key} className="flex min-w-0 flex-wrap items-center gap-2">
                     <Input
@@ -582,13 +746,19 @@ export function ContactsPage(): React.JSX.Element {
         </section>
       </div>
 
+      <ContactGroupsDialog
+        open={groupsOpen}
+        groups={groups}
+        onOpenChange={setGroupsOpen}
+        onChanged={refreshGroups}
+      />
       <ResponsiveDialog
         open={deleteOpen}
         onOpenChange={(open) => {
           if (!busy) setDeleteOpen(open)
         }}
-        title="删除联系人？"
-        description="删除后无法撤销，所有账号的联系人列表都会移除此人。"
+        title={deleteIds.length > 1 ? `删除所选的 ${deleteIds.length} 个联系人？` : '删除联系人？'}
+        description="删除后无法撤销，所有账号的联系人列表都会移除所选联系人。"
         footer={
           <>
             <Button variant="outline" disabled={busy !== null} onClick={() => setDeleteOpen(false)}>
@@ -600,9 +770,18 @@ export function ContactsPage(): React.JSX.Element {
           </>
         }
       >
-        <p className="break-words text-sm">
-          {editor.saved.displayName || editor.saved.emails[0]?.email}
-        </p>
+        <ul className="max-h-40 overflow-auto text-sm">
+          {contacts
+            .filter((contact) => deleteIds.includes(contact.contactId))
+            .map((contact) => (
+              <li key={contact.contactId} className="break-words">
+                {contact.displayName || contact.emails[0]?.email}
+              </li>
+            ))}
+        </ul>
+        {dirty && draft.contactId !== undefined && deleteIds.includes(draft.contactId) ? (
+          <p className="mt-2 text-xs text-destructive">当前联系人的未保存修改也将被丢弃。</p>
+        ) : null}
         {deleteError ? (
           <p role="alert" className="mt-2 text-xs text-destructive">
             {deleteError}

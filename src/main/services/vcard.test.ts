@@ -16,6 +16,7 @@ const contact: Contact = {
   displayName: '张三，项目负责人',
   note: `第一行，备注；第二行\\字\n${'中文'.repeat(40)}`,
   isStarred: true,
+  groups: [],
   emails: [
     { contactEmailId: 1, email: 'zhang@example.com', label: '工作', isDefault: true },
     { contactEmailId: 2, email: 'zhang.home@example.com', label: '家庭', isDefault: false }

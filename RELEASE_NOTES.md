@@ -1,5 +1,59 @@
 # OneMail Next 版本记录 / Release notes
 
+## 下一版本增量更新（2026-10-24） / Next version update
+
+对比基线：`main` 提交 `5aa786c`。本节记录联系人、看板、草稿箱和发送队列的后续改进；此前的功能说明保留在下方。`package.json` 版本保持 `26.730.1039`，本次提交不创建发布标签，也不代表安装包已更新。
+
+### 中文
+
+#### 联系人与分组
+
+- 邮件发件人和收件人的悬浮信息卡新增“添加到联系人”，可直接从邮件保存联系人。
+- 新增联系人分组管理，同一联系人可加入多个分组；联系人搜索支持同时按关键词和分组筛选，写信时可按联系人组添加收件人。
+- 联系人列表新增复选框、全选筛选结果和批量删除确认。删除当前正在编辑的联系人时会提示；删除其他联系人不会清空当前未保存的编辑内容。
+
+#### 草稿箱与发送队列
+
+- 本地草稿箱统一汇总各账号草稿，保留每封草稿的发件账号，支持搜索、账号筛选和每页 50 条分页。修复打开草稿箱时反复刷新导致界面卡住的问题。
+- 草稿箱与发送队列改为主区域列表，不再使用抽屉。侧边栏按“草稿箱”“发送队列”“全部邮箱”的顺序排列，其后为各邮箱账号。
+- 草稿列表新增复选框、当前页全选和批量删除确认；切换分页、搜索或账号筛选时清空选择，避免误删此前选中的草稿。
+- 发送队列新增“清除已发送”和“清除失败”，确认后按状态清理全部本地发送记录，不受当前列表加载条数限制。清理不删除服务器邮件、草稿或正在排队、发送中的记录；已发送记录虽不显示在活动队列中，仍可清理。
+
+#### 看板与窗口
+
+- 看板支持多选邮件事项后批量拖拽至其他分栏，并可通过右键菜单修改事项标题、备注和提醒时间。
+- 看板提醒独立于全局新邮件通知设置，关闭设置中的新邮件通知不会关闭看板提醒。
+- 修复联系人、看板独立窗口的拖动区域，并将页面工具栏与原生最小化、最大化、关闭按钮分开，避免相互重叠。
+
+#### 图标修复与已知问题
+
+- Outlook 账号标志改用随应用打包的本地 Microsoft Outlook 图标，修复远程图标加载失败显示破图的问题；Outlook、Hotmail 和 Microsoft 对应的 Outlook 标志不再依赖远程 favicon 请求。其他服务商的图标逻辑保持不变。
+- Gmail / Outlook 掉线、重连及 OAuth 刷新问题仅完成排查，本次未修改连接或认证逻辑，尚不能确认此前 Outlook 异常的实际原因。图标修复不等于账号连接问题已解决。
+- **账号代理尚未覆盖全部网络请求。** 新建 IMAP / POP3 / SMTP 连接以及正文、附件读取使用现有代理逻辑；允许加载的邮件远程图片、背景、跟踪资源及 OAuth 相关请求尚未统一走账号代理。隐私策略仍会阻止被判定为禁止加载的资源，本次未放宽策略。
+
+#### 验证与发布范围
+
+- 本地完整回归通过：56 个测试文件、237 个用例。类型检查及生产构建通过；浏览器验证覆盖草稿和队列操作、联系人批量删除、看板交互及 Outlook 本地图标解码。
+- 现有部分文件仍有 ESLint 报错，未宣称全仓库 lint 通过。CI 按现有工作流在 Windows / Linux 上运行测试、类型检查和生产构建。
+- 本次未重新生成安装包，不触发标签发布工作流。CI 实际执行结果以本次提交对应的 GitHub Actions 记录为准。
+
+### English
+
+Baseline: `main` at `5aa786c`. The package version remains `26.730.1039`; this update does not create a release tag or publish new installers.
+
+- Added an Add to Contacts action to sender/recipient hover cards, multi-group contact membership, combined text/group filtering, and recipient selection by contact group.
+- Added contact checkboxes, select-all for filtered results, and confirmed bulk deletion while preserving unrelated unsaved contact edits.
+- Unified local drafts across accounts while retaining each draft's sender. Added search, account filtering, 50-item pagination, page selection, and confirmed bulk deletion. Fixed repeated draft refreshes that could freeze the view.
+- Moved drafts and the sending queue into the main workspace. Sidebar order is now Drafts, Sending Queue, All Accounts, then individual accounts.
+- Added Clear Sent and Clear Failed actions for all matching local outbox records, regardless of the displayed list limit. These actions preserve server mail, drafts, queued messages, and messages currently being sent.
+- Added multi-item board dragging and context-menu editing of task titles, notes, and reminder times. Board reminders remain independent of global new-mail notification settings.
+- Fixed dragging and title-bar control overlap in the standalone Contacts and Board windows.
+- Bundled a local Microsoft Outlook icon to fix broken provider images without relying on remote favicon loading for Outlook-related aliases. Other providers are unchanged.
+- Gmail/Outlook reconnection and OAuth issues were investigated, not fixed. Full account-proxy coverage remains pending for remote HTML resources and OAuth requests; existing privacy blocking remains in effect.
+- Local verification passed all 237 tests in 56 files, type checks, and production build, with browser checks for the updated workflows and Outlook icon. Existing ESLint errors remain in some files. Installers were not rebuilt; consult the commit's GitHub Actions run for Windows/Linux CI results.
+
+---
+
 ## 下一版本（开发中，2026-10-23） / Next version (in development)
 
 对比基线：`origin/main`，提交 `3cc38678519d7c38ee9e25a8f9989b5169934000`（`feat: improve mailbox folders and message actions`）。远端默认分支为 `main`，没有 `master` 分支。当前 `package.json` 版本仍为 `26.730.1039`；本节描述相对主线的代码变化，不代表已发布新的安装包或 GitHub Release。

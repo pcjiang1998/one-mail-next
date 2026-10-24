@@ -2,6 +2,7 @@ import { getDatabase, toNumber, toOptionalString, type SqliteRow } from '../conn
 import { basename } from 'node:path'
 import { existsSync, statSync } from 'node:fs'
 import type { ComposeAddress, ComposeAttachment } from '../../mail/message-composer'
+import type { DraftListQuery } from '../../../shared/types'
 
 export type OutboxComposeKind = 'new' | 'reply' | 'reply_all' | 'forward'
 export type OutboxStatus =
@@ -251,6 +252,57 @@ export function listOutboxRecords(
   return rows.map(mapOutboxRow)
 }
 
+export function listDraftRecords(input: DraftListQuery = {}): {
+  messages: OutboxRecord[]
+  totalCount: number
+  draftCount: number
+  offset: number
+} {
+  ensureOutboxTables()
+  const db = getDatabase()
+  const limit = Math.max(1, Math.min(input.limit ?? 50, 500))
+  const where = `status = 'draft'
+    AND (:accountId IS NULL OR account_id = :accountId)
+    AND (:keyword = '' OR instr(lower(coalesce(subject, '')), :keyword) > 0
+      OR EXISTS (
+        SELECT 1 FROM (
+          SELECT value FROM json_each(to_json)
+          UNION ALL SELECT value FROM json_each(cc_json)
+          UNION ALL SELECT value FROM json_each(bcc_json)
+        ) AS recipient
+        WHERE instr(lower(coalesce(json_extract(recipient.value, '$.email'), '')), :keyword) > 0
+          OR instr(lower(coalesce(json_extract(recipient.value, '$.name'), '')), :keyword) > 0
+      ))`
+  const params = {
+    accountId: input.accountId ?? null,
+    keyword: (input.keyword ?? '').trim().toLowerCase()
+  }
+  const totalCount = toNumber(
+    db.prepare(`SELECT count(*) AS count FROM onemail_outbox_messages WHERE ${where}`).get(params)!
+      .count
+  )
+  const draftCount = toNumber(
+    db
+      .prepare("SELECT count(*) AS count FROM onemail_outbox_messages WHERE status = 'draft'")
+      .get()!.count
+  )
+  // Keep the last page reachable when its final draft is deleted or sent.
+  const offset = Math.min(
+    Math.max(0, input.offset ?? 0),
+    Math.max(0, Math.ceil(totalCount / limit) - 1) * limit
+  )
+  const messages = db
+    .prepare<OutboxRow>(
+      `
+    SELECT * FROM onemail_outbox_messages WHERE ${where}
+    ORDER BY updated_at DESC, outbox_id DESC LIMIT :limit OFFSET :offset
+  `
+    )
+    .all({ ...params, limit, offset })
+    .map(mapOutboxRow)
+  return { messages, totalCount, draftCount, offset }
+}
+
 export function markOutboxSending(outboxId: number): void {
   ensureOutboxTables()
   getDatabase()
@@ -352,6 +404,50 @@ export function deleteOutboxRecord(outboxId: number): boolean {
     .run({ outboxId })
 
   return true
+}
+
+export function deleteDraftRecords(outboxIds: number[]): number {
+  ensureOutboxTables()
+  const ids = [...new Set(outboxIds)]
+  const db = getDatabase()
+  db.exec('SAVEPOINT onemail_drafts_delete')
+  try {
+    const result = db
+      .prepare(
+        `
+      UPDATE onemail_outbox_messages
+      SET status = 'deleted', deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE status = 'draft' AND outbox_id IN (SELECT value FROM json_each(:ids))
+    `
+      )
+      .run({ ids: JSON.stringify(ids) })
+    if (Number(result.changes) !== ids.length)
+      throw new Error('部分草稿已删除或不再是草稿，请刷新列表后重试。')
+    db.exec('RELEASE SAVEPOINT onemail_drafts_delete')
+    return Number(result.changes)
+  } catch (error) {
+    db.exec('ROLLBACK TO SAVEPOINT onemail_drafts_delete')
+    db.exec('RELEASE SAVEPOINT onemail_drafts_delete')
+    throw error
+  }
+}
+
+export function clearOutboxRecords(status: 'sent' | 'failed'): number {
+  if (status !== 'sent' && status !== 'failed') throw new Error('只能清除已发送或发送失败的记录。')
+  ensureOutboxTables()
+  return Number(
+    getDatabase()
+      .prepare(
+        `
+    UPDATE onemail_outbox_messages
+    SET status = 'deleted', deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE status = :status
+  `
+      )
+      .run({ status }).changes
+  )
 }
 
 export function ensureOutboxTables(db = getDatabase()): void {

@@ -1,3 +1,4 @@
+import * as React from 'react'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
@@ -11,6 +12,7 @@ const contact: Contact = {
   displayName: '张三',
   note: '',
   isStarred: false,
+  groups: [],
   emails: [
     { contactEmailId: 1, email: 'zhang.work@example.com', label: '工作', isDefault: true },
     { contactEmailId: 2, email: 'zhang.home@example.com', label: '家庭', isDefault: false }
@@ -64,5 +66,59 @@ describe('AddressInput contact suggestions', () => {
     await user.type(input, 'one@example.com')
     await user.keyboard('{Enter}')
     expect(onChange).toHaveBeenLastCalledWith(['one@example.com'])
+  })
+
+  it('adds default addresses from groups and deduplicates overlapping group members', async () => {
+    const list = vi
+      .fn()
+      .mockResolvedValue([
+        contact,
+        { ...contact, contactId: 12, emails: [{ email: 'another@example.com', isDefault: true }] }
+      ])
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: {
+        contacts: {
+          list,
+          listGroups: vi.fn().mockResolvedValue([
+            { groupId: 3, name: '工作组' },
+            { groupId: 4, name: '项目组' }
+          ])
+        }
+      }
+    })
+    const user = userEvent.setup()
+    const change = vi.fn()
+    function Harness(): React.JSX.Element {
+      const [value, setValue] = React.useState(['张三 <ZHANG.WORK@example.com>'])
+      return (
+        <AddressInput
+          id="to"
+          value={value}
+          onChange={(next) => {
+            change(next)
+            setValue(next)
+          }}
+        />
+      )
+    }
+    render(
+      <I18nProvider>
+        <Harness />
+      </I18nProvider>
+    )
+    await user.click(screen.getByLabelText('按联系人组添加收件人'))
+    await user.click(await screen.findByRole('button', { name: '工作组' }))
+    expect(list).toHaveBeenCalledWith(undefined, 3)
+    expect(change).toHaveBeenLastCalledWith([
+      '张三 <ZHANG.WORK@example.com>',
+      'another@example.com'
+    ])
+    await user.click(screen.getByLabelText('按联系人组添加收件人'))
+    await user.click(await screen.findByRole('button', { name: '项目组' }))
+    expect(change).toHaveBeenLastCalledWith([
+      '张三 <ZHANG.WORK@example.com>',
+      'another@example.com'
+    ])
   })
 })

@@ -5,8 +5,11 @@ import { getAccount } from '../db/repositories/account.repository'
 import {
   createOutboxRecord,
   deleteOutboxRecord,
+  deleteDraftRecords,
+  clearOutboxRecords,
   getOutboxRecord,
   listOutboxRecords,
+  listDraftRecords,
   updateOutboxRecord,
   type OutboxRecord
 } from '../db/repositories/outbox.repository'
@@ -16,6 +19,7 @@ import { createMessageId } from '../mail/message-composer'
 import { createReplyDraft } from '../mail/reply-draft'
 import { resolveAccountSignature } from '../db/repositories/settings.repository'
 import { retryOutboxEmail, sendPlainTextEmail } from '../mail/smtp-send'
+import type { DraftListQuery, DraftListResult } from '../../shared/types'
 import type {
   ComposeDraft,
   BulkForwardDraftInput,
@@ -182,6 +186,11 @@ export function registerComposeIpc(): void {
     }).map(toOutboxMessage)
   )
 
+  ipcMain.handle('compose/listDrafts', (_event, query?: DraftListQuery): DraftListResult => {
+    const result = listDraftRecords(query)
+    return { ...result, messages: result.messages.map(toOutboxMessage) }
+  })
+
   ipcMain.handle('compose/saveDraft', (_event, input: MailSendInput): OutboxMessage => {
     const account = getAccount(input.accountId)
     if (!account) throw new Error(`Account not found: ${input.accountId}`)
@@ -238,6 +247,12 @@ export function registerComposeIpc(): void {
     broadcastSent(payload)
     return payload
   })
+  ipcMain.handle('compose/deleteDrafts', (_event, outboxIds: number[]) =>
+    deleteDraftRecords(outboxIds)
+  )
+  ipcMain.handle('compose/clearOutbox', (_event, status: 'sent' | 'failed') =>
+    clearOutboxRecords(status)
+  )
   ipcMain.handle('compose/deleteOutbox', (_event, outboxId: number) => {
     const record = requireOutboxRecord(outboxId)
     if (record.status === 'sending') throw new Error('发送中的记录不能直接删除。')

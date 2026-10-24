@@ -18,6 +18,7 @@ type DeleteDraftDialogProps = {
   open: boolean
   pending?: boolean
   subject?: string
+  count?: number
   onOpenChange: (open: boolean) => void
   onConfirm: () => void
 }
@@ -26,6 +27,7 @@ export function DeleteDraftDialog({
   open,
   pending = false,
   subject,
+  count = 1,
   onOpenChange,
   onConfirm
 }: DeleteDraftDialogProps): React.JSX.Element {
@@ -47,8 +49,12 @@ export function DeleteDraftDialog({
               <Trash2 aria-hidden="true" />
             )}
           </AlertDialogMedia>
-          <AlertDialogTitle>{t('mail.draft.deleteTitle')}</AlertDialogTitle>
-          <AlertDialogDescription>{t('mail.draft.deleteDescription')}</AlertDialogDescription>
+          <AlertDialogTitle>
+            {count > 1 ? t('mail.drafts.bulkDeleteTitle', { count }) : t('mail.draft.deleteTitle')}
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            {count > 1 ? t('mail.drafts.bulkDeleteDescription') : t('mail.draft.deleteDescription')}
+          </AlertDialogDescription>
         </AlertDialogHeader>
         {subject ? (
           <p className="truncate rounded-md border bg-muted/40 px-3 py-2 text-sm font-medium">

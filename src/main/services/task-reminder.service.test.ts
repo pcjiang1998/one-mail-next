@@ -8,6 +8,7 @@ const repositoryMock = vi.hoisted(() => ({
   listDueReminders: vi.fn(),
   listTasks: vi.fn(() => []),
   markReminderFired: vi.fn(() => true),
+  updateTask: vi.fn(),
   updateTaskStatuses: vi.fn()
 }))
 
@@ -50,6 +51,12 @@ const electronMock = await vi.hoisted(async () => {
 
 vi.mock('../db/repositories/task.repository', () => repositoryMock)
 vi.mock('electron', () => electronMock)
+vi.mock('../db/repositories/settings.repository', () => ({
+  getSettings: vi.fn(() => ({ defaultDesktopNotificationsEnabled: false }))
+}))
+vi.mock('../db/repositories/account.repository', () => ({
+  getAccount: vi.fn(() => ({ desktopNotificationsEnabled: false }))
+}))
 
 import type { BoardTask, TaskReminder } from '../../shared/types'
 import {
@@ -57,6 +64,8 @@ import {
   startTaskReminderService,
   stopTaskReminderService
 } from './task-reminder.service'
+import { getSettings } from '../db/repositories/settings.repository'
+import { getAccount } from '../db/repositories/account.repository'
 
 describe('task reminder service', () => {
   beforeEach(() => {
@@ -91,6 +100,15 @@ describe('task reminder service', () => {
 
     expect(electronMock.Notification.instances).toHaveLength(0)
     expect(repositoryMock.markReminderFired).not.toHaveBeenCalled()
+  })
+
+  it('shows board reminders even when global and account mail notifications are disabled', () => {
+    repositoryMock.listDueReminders.mockReturnValue([dueReminder()])
+    startTaskReminderService()
+    expect(electronMock.Notification.instances).toHaveLength(1)
+    expect(repositoryMock.markReminderFired).toHaveBeenCalledWith(41, expect.any(String))
+    expect(getSettings).not.toHaveBeenCalled()
+    expect(getAccount).not.toHaveBeenCalled()
   })
 
   it('marks a reminder only after the notification show event and does not duplicate it after restart', () => {

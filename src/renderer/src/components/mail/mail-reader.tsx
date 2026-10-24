@@ -14,7 +14,7 @@ import {
 import * as React from 'react'
 
 import { formatAbsoluteTime, formatRelativeTime } from '@renderer/components/mail/date-format'
-import { EllipsisTooltip } from '@renderer/components/mail/ellipsis-tooltip'
+import { AddressHoverCard } from '@renderer/components/mail/address-hover-card'
 import {
   ATTACHMENT_METADATA_PENDING_SIZE,
   getDisplayAttachmentName,
@@ -771,9 +771,7 @@ function MetaLine({ label, value }: { label: string; value: string }): React.JSX
   return (
     <div className="grid min-w-0 grid-cols-[3rem_minmax(0,1fr)] items-baseline ">
       <span>{label}:</span>
-      <EllipsisTooltip alwaysShow className="min-w-0 truncate text-foreground" tooltip={value}>
-        {value}
-      </EllipsisTooltip>
+      <AddressHoverCard key={value} value={value} />
     </div>
   )
 }

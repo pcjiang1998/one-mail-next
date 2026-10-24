@@ -1,16 +1,23 @@
 import { domainToASCII } from 'node:url'
 
 import { getDatabase, toBoolean, toNumber, type SqliteRow } from '../connection'
-import type { Contact, ContactEmail, ContactInput } from '../../../shared/types'
+import type {
+  Contact,
+  ContactEmail,
+  ContactGroup,
+  ContactGroupInput,
+  ContactInput
+} from '../../../shared/types'
 
 export const MAX_CONTACT_EMAILS = 50
 export const MAX_IMPORT_CONTACTS = 1000
 
-export function listContacts(search?: string): Contact[] {
+export function listContacts(search?: string, groupId?: number): Contact[] {
   if (search !== undefined && (typeof search !== 'string' || search.length > 1000)) {
     throw new Error('搜索内容无效或过长。')
   }
   const normalizedSearch = search?.trim() ?? ''
+  if (groupId !== undefined) validateContactId(groupId)
   // Treat SQL wildcards as literal characters when searching addresses and notes.
   const likeSearch = `%${normalizedSearch.replace(/[\\%_]/g, '\\$&')}%`
   const rows = getDatabase()
@@ -23,9 +30,13 @@ export function listContacts(search?: string): Contact[] {
             SELECT 1 FROM onemail_contact_emails ce
             WHERE ce.contact_id = c.contact_id AND ce.email LIKE :likeSearch ESCAPE '\\'
           ))
+       AND (:groupId IS NULL OR EXISTS (
+         SELECT 1 FROM onemail_contact_group_members gm
+         WHERE gm.contact_id = c.contact_id AND gm.group_id = :groupId
+       ))
        ORDER BY c.is_starred DESC, c.display_name COLLATE NOCASE, c.contact_id`
     )
-    .all({ search: normalizedSearch, likeSearch })
+    .all({ search: normalizedSearch, likeSearch, groupId: groupId ?? null })
 
   return rows.map(mapContactRow)
 }
@@ -44,6 +55,58 @@ export function getContact(contactId: number): Contact | null {
 export function saveContact(input: ContactInput): Contact {
   const normalized = normalizeContactInput(input)
   return inContactTransaction(() => writeContact(normalized))
+}
+
+export function addContactFromAddress(input: { displayName: string; email: string }): Contact {
+  const normalized = normalizeContactInput({
+    displayName: input.displayName,
+    emails: [{ email: input.email, isDefault: true }]
+  })
+  return inContactTransaction(
+    () => findContactByEmail(normalized.emails[0].email) ?? writeContact(normalized)
+  )
+}
+
+export function listContactGroups(): ContactGroup[] {
+  return getDatabase()
+    .prepare<{ group_id: number; name: string }>(
+      'SELECT group_id, name FROM onemail_contact_groups ORDER BY name COLLATE NOCASE, group_id'
+    )
+    .all()
+    .map((row) => ({ groupId: toNumber(row.group_id), name: row.name }))
+}
+
+export function saveContactGroup(input: ContactGroupInput): ContactGroup {
+  const name = readText(input.name, '分组名称', 100).trim()
+  if (!name) throw new Error('分组名称不能为空。')
+  if (input.groupId !== undefined) validateContactId(input.groupId)
+  const db = getDatabase()
+  const duplicate = db
+    .prepare<{ group_id: number }>('SELECT group_id FROM onemail_contact_groups WHERE name = :name')
+    .get({ name })
+  if (duplicate && toNumber(duplicate.group_id) !== input.groupId) {
+    throw new Error('已存在同名分组。')
+  }
+  if (input.groupId !== undefined) {
+    const result = db
+      .prepare('UPDATE onemail_contact_groups SET name = :name WHERE group_id = :groupId')
+      .run({ name, groupId: input.groupId })
+    if (!result.changes) throw new Error('分组不存在。')
+    return { groupId: input.groupId, name }
+  }
+  const result = db
+    .prepare('INSERT INTO onemail_contact_groups (name) VALUES (:name)')
+    .run({ name })
+  return { groupId: Number(result.lastInsertRowid), name }
+}
+
+export function deleteContactGroup(groupId: number): boolean {
+  validateContactId(groupId)
+  return (
+    getDatabase()
+      .prepare('DELETE FROM onemail_contact_groups WHERE group_id = :groupId')
+      .run({ groupId }).changes > 0
+  )
 }
 
 /** Validate the entire batch first; never change a contact already in the address book. */
@@ -104,6 +167,17 @@ export function findContactByEmail(email: string): Contact | null {
   return row ? getContact(toNumber(row.contact_id)) : null
 }
 
+export function deleteContacts(contactIds: number[]): number {
+  const ids = [...new Set(contactIds)]
+  ids.forEach(validateContactId)
+  return inContactTransaction(() => {
+    for (const id of ids) {
+      if (!deleteContact(id)) throw new Error('联系人不存在，请刷新列表后重试。')
+    }
+    return ids.length
+  })
+}
+
 export function normalizeEmail(email: string): string {
   return email.trim().toLowerCase()
 }
@@ -158,13 +232,18 @@ export function normalizeContactInput(input: unknown): NormalizedContactInput {
     throw new Error('只能选择一个默认邮箱地址。')
   }
   if (!emails.some((email) => email.isDefault)) emails[0].isDefault = true
+  if (value.groupIds !== undefined) {
+    if (!Array.isArray(value.groupIds)) throw new Error('联系人分组无效。')
+    value.groupIds.forEach(validateContactId)
+  }
 
   return {
     contactId: value.contactId as number | undefined,
     displayName,
     note,
     isStarred: value.isStarred === true,
-    emails
+    emails,
+    groupIds: value.groupIds === undefined ? undefined : [...new Set(value.groupIds as number[])]
   }
 }
 
@@ -261,6 +340,17 @@ function writeContact(input: NormalizedContactInput): Contact {
       isDefault: email.isDefault ? 1 : 0
     })
   }
+  if (input.groupIds !== undefined) {
+    db.prepare('DELETE FROM onemail_contact_group_members WHERE contact_id = :contactId').run({
+      contactId
+    })
+    for (const groupId of input.groupIds) {
+      db.prepare(
+        `INSERT INTO onemail_contact_group_members (contact_id, group_id)
+         VALUES (:contactId, :groupId)`
+      ).run({ contactId, groupId })
+    }
+  }
   // Read back before committing, so a read failure cannot report an uncommitted save as success.
   const contact = getContact(contactId)
   if (!contact) throw new Error('保存联系人失败。')
@@ -284,6 +374,14 @@ type ContactEmailRow = SqliteRow & {
 }
 
 function mapContactRow(row: ContactRow): Contact {
+  const groups = getDatabase()
+    .prepare<{ group_id: number; name: string }>(
+      `SELECT g.group_id, g.name FROM onemail_contact_groups g
+       JOIN onemail_contact_group_members gm ON gm.group_id = g.group_id
+       WHERE gm.contact_id = :contactId ORDER BY g.name COLLATE NOCASE, g.group_id`
+    )
+    .all({ contactId: row.contact_id })
+    .map((group) => ({ groupId: toNumber(group.group_id), name: group.name }))
   const emails = getDatabase()
     .prepare<ContactEmailRow>(
       `SELECT contact_email_id, email, label, is_default
@@ -305,6 +403,7 @@ function mapContactRow(row: ContactRow): Contact {
     note: row.note,
     isStarred: toBoolean(row.is_starred),
     emails,
+    groups,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   }
