@@ -9,6 +9,7 @@ import { getSettings } from './db/repositories/settings.repository'
 import { registerIpcHandlers } from './ipc'
 import { installRuntimeErrorGuards } from './runtime-errors'
 import { startAutoUpdateChecks, stopAutoUpdateChecks } from './services/auto-update'
+import { startCacheMaintenance, stopCacheMaintenance } from './services/cache-maintenance'
 import {
   requestForegroundMailboxSync,
   requestManualMailboxSync,
@@ -201,6 +202,7 @@ if (hasSingleInstanceLock)
     void processPendingMailRules().catch((error) =>
       console.error('处理待执行邮件规则失败。', error)
     )
+    startCacheMaintenance()
     startMailboxWatchers()
     startTaskReminderService()
     startAutoUpdateChecks(getSettings().updateCheckFrequency)
@@ -240,6 +242,7 @@ app.on('before-quit', () => {
   markAppQuitRequested()
   destroyTray()
   stopAutoUpdateChecks()
+  stopCacheMaintenance()
   stopMailboxWatchers()
   stopTaskReminderService()
   closeDatabase()

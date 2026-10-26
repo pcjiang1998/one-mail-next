@@ -5,7 +5,7 @@ import {
   listMessages,
   loadMessageBody
 } from '../db/repositories/message.repository'
-import { downloadAttachment } from '../mail/attachment-downloader'
+import { downloadAttachment, touchMessageAccess } from '../mail/attachment-downloader'
 import { loadMessageBodyFromImap } from '../mail/body-loader'
 import {
   markUnreadMessagesRead,
@@ -15,6 +15,7 @@ import {
 import type { MessageBulkReadStateInput, MessageListQuery, MessageMarkAllReadInput } from './types'
 
 export function registerMessageIpc(): void {
+  ipcMain.handle('messages/access', (_event, messageId: number) => touchMessageAccess(messageId))
   ipcMain.handle('messages/list', (_event, query?: MessageListQuery) => listMessages(query))
   ipcMain.handle('messages/stats', () => listAccountMailboxStats())
   ipcMain.handle('messages/get', (_event, messageId: number) => getMessage(messageId))

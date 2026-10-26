@@ -377,7 +377,7 @@ async function syncChangedMailbox(
   notifyNewMail({
     accountId,
     reason,
-    messageCount: result.insertedCount
+    messageCount: result.newMailCount
   })
   notifyMailboxChanged({
     accountId,
@@ -408,7 +408,7 @@ async function syncMailboxes(
         notifyNewMail({
           accountId: account.accountId,
           reason: 'manual',
-          messageCount: result.insertedCount
+          messageCount: result.newMailCount
         })
       } catch (error) {
         const message = error instanceof Error ? error.message : '同步账号失败。'

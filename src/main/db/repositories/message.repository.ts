@@ -43,6 +43,7 @@ type AttachmentRow = SqliteRow & {
   mime_type: string | null
   content_disposition: MailMessageAttachment['contentDisposition'] | null
   size_bytes: number
+  cached: number
 }
 
 type AddressRow = SqliteRow & {
@@ -371,6 +372,8 @@ export function listRecentNotificationMessages(
       WHERE m.account_id = :accountId
         AND m.remote_deleted = 0
         AND m.user_hidden = 0
+        AND m.sync_backfill = 0
+        AND f.role = 'inbox'
       ORDER BY m.message_id DESC
       LIMIT :limit
       `
@@ -983,7 +986,11 @@ function listAttachments(messageId: number, db = getDatabase()): MailMessageAtta
         filename,
         mime_type,
         content_disposition,
-        size_bytes
+        size_bytes,
+        (cached_content IS NOT NULL OR EXISTS (
+          SELECT 1 FROM onemail_message_bodies b
+          WHERE b.message_id = onemail_message_attachments.message_id AND b.raw_source IS NOT NULL
+        )) AS cached
       FROM onemail_message_attachments
       WHERE message_id = :messageId
       ORDER BY attachment_id ASC
@@ -996,7 +1003,8 @@ function listAttachments(messageId: number, db = getDatabase()): MailMessageAtta
     filename: row.filename,
     mimeType: toOptionalString(row.mime_type),
     contentDisposition: row.content_disposition ?? undefined,
-    sizeBytes: toNumber(row.size_bytes)
+    sizeBytes: toNumber(row.size_bytes),
+    cached: toBoolean(row.cached)
   }))
 }
 
@@ -1043,7 +1051,12 @@ function formatAddressList(addresses: MessageComposeAddress[]): string | undefin
 }
 
 function mapBodyRow(row: MessageRow): MailMessageBody | undefined {
-  if (!row.body_text && !row.body_html_sanitized) return undefined
+  if (
+    !row.body_text &&
+    !row.body_html_sanitized &&
+    !(row.body_status === 'ready' && row.external_images_blocked != null)
+  )
+    return undefined
 
   return {
     messageId: toNumber(row.message_id),

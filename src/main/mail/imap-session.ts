@@ -95,6 +95,32 @@ export class SimpleImapSession {
     return extractRawMessageLiteral(response)
   }
 
+  async fetchMessageHeaders(uid: number): Promise<string> {
+    assertValidUid(uid)
+    const response = await this.command(
+      `UID FETCH ${uid} (BODY.PEEK[HEADER])`,
+      BODY_FETCH_TIMEOUT_MS
+    )
+    return extractRawMessageLiteral(response)
+  }
+
+  async fetchBodyStructure(uid: number): Promise<string> {
+    assertValidUid(uid)
+    return this.command(`UID FETCH ${uid} (BODYSTRUCTURE)`, BODY_FETCH_TIMEOUT_MS)
+  }
+
+  async fetchBodySection(uid: number, section: string): Promise<string> {
+    assertValidUid(uid)
+    if (!/^(?:HEADER|[1-9]\d*(?:\.[1-9]\d*)*(?:\.MIME)?)$/.test(section)) {
+      throw new Error('IMAP MIME 部件编号无效。')
+    }
+    const response = await this.command(
+      `UID FETCH ${uid} (BODY.PEEK[${section}])`,
+      BODY_FETCH_TIMEOUT_MS
+    )
+    return extractBodySectionLiteral(response, section)
+  }
+
   async appendMessage(
     mailboxPath: string,
     rawMessage: string,
@@ -236,6 +262,22 @@ export class SimpleImapSession {
   private assertSocketHealthy(): void {
     if (this.socketError) throw this.socketError
   }
+}
+
+export function extractBodySectionLiteral(response: string, section: string): string {
+  const escapedSection = section.replace(/\./g, '\\.')
+  const match = new RegExp(
+    `BODY\\[${escapedSection}\\](?:<\\d+>)?\\s+\\{(\\d+)\\}\\r?\\n`,
+    'i'
+  ).exec(response)
+  if (!match) throw new Error(`IMAP 未返回请求的 MIME 部件 ${section}，未写入缓存。`)
+  const size = Number(match[1])
+  const content = sliceUtf8Literal(response, match.index + match[0].length, size)
+  const tail = response.slice(match.index + match[0].length + content.length)
+  if (Buffer.byteLength(content, 'utf8') !== size || !/^\s*(?:UID\s+\d+\s*)?\)/i.test(tail)) {
+    throw new Error(`IMAP MIME 部件 ${section} 响应不完整，未写入缓存。`)
+  }
+  return content
 }
 
 function extractRawMessageLiteral(response: string): string {

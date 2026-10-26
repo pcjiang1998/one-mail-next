@@ -2,6 +2,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:
 import { getDatabase, getDatabaseKey } from '../connection'
 import { getOpenAtLogin, setOpenAtLogin } from '../../services/login-item'
 import { parseCustomProxyUrl } from '../../../shared/proxy-url'
+import { DEFAULT_SYNC_RANGES, validateSyncRanges } from '../../../shared/sync-range'
 import type {
   AppSettings,
   BackupSyncSettings,
@@ -14,7 +15,9 @@ import type {
 
 const defaultSettings: AppSettings = {
   syncIntervalMinutes: 15,
-  syncWindowDays: 90,
+  ...DEFAULT_SYNC_RANGES,
+  downloadAttachmentsSeparately: false,
+  cleanupMetadata: false,
   openAtLogin: false,
   defaultDesktopNotificationsEnabled: true,
   externalImagesBlocked: true,
@@ -98,6 +101,10 @@ const defaultTranslationSettings: TranslationSettings = {
 const settingsDefinition = {
   syncIntervalMinutes: { key: 'sync_interval_minutes', type: 'number' },
   syncWindowDays: { key: 'sync_window_days', type: 'number' },
+  syncBodyWindowDays: { key: 'sync_body_window_days', type: 'number' },
+  cacheRetentionDays: { key: 'cache_retention_days', type: 'number' },
+  downloadAttachmentsSeparately: { key: 'download_attachments_separately', type: 'boolean' },
+  cleanupMetadata: { key: 'cleanup_metadata', type: 'boolean' },
   openAtLogin: { key: 'open_at_login', type: 'boolean' },
   defaultDesktopNotificationsEnabled: {
     key: 'default_desktop_notifications_enabled',
@@ -152,7 +159,14 @@ export function getSettings(): AppSettings {
 
   return {
     syncIntervalMinutes: readNumber(byKey.get(settingsDefinition.syncIntervalMinutes.key), 15),
-    syncWindowDays: readNumber(byKey.get(settingsDefinition.syncWindowDays.key), 90),
+    syncWindowDays: readNumber(byKey.get(settingsDefinition.syncWindowDays.key), 30),
+    syncBodyWindowDays: readNumber(byKey.get(settingsDefinition.syncBodyWindowDays.key), 7),
+    cacheRetentionDays: readNumber(byKey.get(settingsDefinition.cacheRetentionDays.key), 0),
+    downloadAttachmentsSeparately: readBoolean(
+      byKey.get(settingsDefinition.downloadAttachmentsSeparately.key),
+      false
+    ),
+    cleanupMetadata: readBoolean(byKey.get(settingsDefinition.cleanupMetadata.key), false),
     openAtLogin: getOpenAtLogin(),
     defaultDesktopNotificationsEnabled: readBoolean(
       byKey.get(settingsDefinition.defaultDesktopNotificationsEnabled.key),
@@ -232,89 +246,118 @@ export function updateSettings(input: SettingsUpdateInput): AppSettings {
     setOpenAtLogin(next.openAtLogin)
   }
 
-  writeSetting(
-    settingsDefinition.syncIntervalMinutes.key,
-    String(next.syncIntervalMinutes),
-    settingsDefinition.syncIntervalMinutes.type
-  )
-  writeSetting(
-    settingsDefinition.syncWindowDays.key,
-    String(next.syncWindowDays),
-    settingsDefinition.syncWindowDays.type
-  )
-  writeSetting(
-    settingsDefinition.defaultDesktopNotificationsEnabled.key,
-    next.defaultDesktopNotificationsEnabled ? '1' : '0',
-    settingsDefinition.defaultDesktopNotificationsEnabled.type
-  )
-  writeSetting(
-    settingsDefinition.openAtLogin.key,
-    next.openAtLogin ? '1' : '0',
-    settingsDefinition.openAtLogin.type
-  )
-  writeSetting(
-    settingsDefinition.externalImagesBlocked.key,
-    next.externalImagesBlocked ? '1' : '0',
-    settingsDefinition.externalImagesBlocked.type
-  )
-  writeSetting(
-    settingsDefinition.privacyDefaultMode.key,
-    next.privacyDefaultMode ?? 'strict',
-    settingsDefinition.privacyDefaultMode.type
-  )
-  writeSetting(settingsDefinition.locale.key, next.locale, settingsDefinition.locale.type)
-  writeSetting(settingsDefinition.theme.key, next.theme, settingsDefinition.theme.type)
-  writeSetting(
-    settingsDefinition.updateCheckFrequency.key,
-    next.updateCheckFrequency,
-    settingsDefinition.updateCheckFrequency.type
-  )
-  writeSetting(
-    settingsDefinition.defaultComposeAccountId.key,
-    next.defaultComposeAccountId === null ? '' : String(next.defaultComposeAccountId),
-    settingsDefinition.defaultComposeAccountId.type
-  )
-  writeSetting(
-    settingsDefinition.syncDeleteToRemote.key,
-    next.syncDeleteToRemote ? '1' : '0',
-    settingsDefinition.syncDeleteToRemote.type
-  )
-  writeSetting(
-    settingsDefinition.globalProxyMode.key,
-    next.globalProxyMode,
-    settingsDefinition.globalProxyMode.type
-  )
-  writeSetting(
-    settingsDefinition.globalProxyUrl.key,
-    optionalTrim(next.globalProxyUrl) ?? '',
-    settingsDefinition.globalProxyUrl.type
-  )
-  writeSetting(
-    settingsDefinition.globalSignatureId.key,
-    next.globalSignatureId === null ? '' : String(next.globalSignatureId),
-    settingsDefinition.globalSignatureId.type
-  )
-  writeSetting(
-    settingsDefinition.globalSyncMode.key,
-    next.globalSyncMode,
-    settingsDefinition.globalSyncMode.type
-  )
-  writeSetting(
-    settingsDefinition.globalSyncIntervalMinutes.key,
-    String(next.globalSyncIntervalMinutes),
-    settingsDefinition.globalSyncIntervalMinutes.type
-  )
-  writeSetting(
-    settingsDefinition.fallbackSyncMode.key,
-    next.fallbackSyncMode,
-    settingsDefinition.fallbackSyncMode.type
-  )
-  writeSetting(
-    settingsDefinition.fallbackSyncIntervalMinutes.key,
-    String(next.fallbackSyncIntervalMinutes),
-    settingsDefinition.fallbackSyncIntervalMinutes.type
-  )
+  const db = getDatabase()
+  db.exec('SAVEPOINT update_app_settings')
+  try {
+    writeSetting(
+      settingsDefinition.syncIntervalMinutes.key,
+      String(next.syncIntervalMinutes),
+      settingsDefinition.syncIntervalMinutes.type
+    )
+    writeSetting(
+      settingsDefinition.syncWindowDays.key,
+      String(next.syncWindowDays),
+      settingsDefinition.syncWindowDays.type
+    )
+    writeSetting(
+      settingsDefinition.syncBodyWindowDays.key,
+      String(next.syncBodyWindowDays),
+      'number'
+    )
+    writeSetting(
+      settingsDefinition.cacheRetentionDays.key,
+      String(next.cacheRetentionDays),
+      'number'
+    )
+    writeSetting(
+      settingsDefinition.downloadAttachmentsSeparately.key,
+      next.downloadAttachmentsSeparately ? '1' : '0',
+      'boolean'
+    )
+    writeSetting(
+      settingsDefinition.cleanupMetadata.key,
+      next.cleanupMetadata ? '1' : '0',
+      'boolean'
+    )
+    writeSetting(
+      settingsDefinition.defaultDesktopNotificationsEnabled.key,
+      next.defaultDesktopNotificationsEnabled ? '1' : '0',
+      settingsDefinition.defaultDesktopNotificationsEnabled.type
+    )
+    writeSetting(
+      settingsDefinition.openAtLogin.key,
+      next.openAtLogin ? '1' : '0',
+      settingsDefinition.openAtLogin.type
+    )
+    writeSetting(
+      settingsDefinition.externalImagesBlocked.key,
+      next.externalImagesBlocked ? '1' : '0',
+      settingsDefinition.externalImagesBlocked.type
+    )
+    writeSetting(
+      settingsDefinition.privacyDefaultMode.key,
+      next.privacyDefaultMode ?? 'strict',
+      settingsDefinition.privacyDefaultMode.type
+    )
+    writeSetting(settingsDefinition.locale.key, next.locale, settingsDefinition.locale.type)
+    writeSetting(settingsDefinition.theme.key, next.theme, settingsDefinition.theme.type)
+    writeSetting(
+      settingsDefinition.updateCheckFrequency.key,
+      next.updateCheckFrequency,
+      settingsDefinition.updateCheckFrequency.type
+    )
+    writeSetting(
+      settingsDefinition.defaultComposeAccountId.key,
+      next.defaultComposeAccountId === null ? '' : String(next.defaultComposeAccountId),
+      settingsDefinition.defaultComposeAccountId.type
+    )
+    writeSetting(
+      settingsDefinition.syncDeleteToRemote.key,
+      next.syncDeleteToRemote ? '1' : '0',
+      settingsDefinition.syncDeleteToRemote.type
+    )
+    writeSetting(
+      settingsDefinition.globalProxyMode.key,
+      next.globalProxyMode,
+      settingsDefinition.globalProxyMode.type
+    )
+    writeSetting(
+      settingsDefinition.globalProxyUrl.key,
+      optionalTrim(next.globalProxyUrl) ?? '',
+      settingsDefinition.globalProxyUrl.type
+    )
+    writeSetting(
+      settingsDefinition.globalSignatureId.key,
+      next.globalSignatureId === null ? '' : String(next.globalSignatureId),
+      settingsDefinition.globalSignatureId.type
+    )
+    writeSetting(
+      settingsDefinition.globalSyncMode.key,
+      next.globalSyncMode,
+      settingsDefinition.globalSyncMode.type
+    )
+    writeSetting(
+      settingsDefinition.globalSyncIntervalMinutes.key,
+      String(next.globalSyncIntervalMinutes),
+      settingsDefinition.globalSyncIntervalMinutes.type
+    )
+    writeSetting(
+      settingsDefinition.fallbackSyncMode.key,
+      next.fallbackSyncMode,
+      settingsDefinition.fallbackSyncMode.type
+    )
+    writeSetting(
+      settingsDefinition.fallbackSyncIntervalMinutes.key,
+      String(next.fallbackSyncIntervalMinutes),
+      settingsDefinition.fallbackSyncIntervalMinutes.type
+    )
 
+    db.exec('RELEASE update_app_settings')
+  } catch (error) {
+    db.exec('ROLLBACK TO update_app_settings')
+    db.exec('RELEASE update_app_settings')
+    throw error
+  }
   return getSettings()
 }
 
@@ -471,6 +514,7 @@ export function setLastAttachmentDownloadDir(directory: string): void {
 }
 
 function ensureDefaultSettings(): void {
+  migrateSyncRanges()
   updateMissingSetting(
     settingsDefinition.syncIntervalMinutes.key,
     String(defaultSettings.syncIntervalMinutes),
@@ -551,6 +595,34 @@ function ensureDefaultSettings(): void {
     String(defaultSettings.fallbackSyncIntervalMinutes),
     settingsDefinition.fallbackSyncIntervalMinutes.type
   )
+}
+
+function migrateSyncRanges(): void {
+  if (readSetting('mail_sync_ranges_version')) return
+  const previous = readSetting(settingsDefinition.syncWindowDays.key)
+  let days = DEFAULT_SYNC_RANGES.syncWindowDays
+  if (previous) {
+    const value = Number(previous.setting_value)
+    if (!previous.setting_value.trim() || !Number.isSafeInteger(value)) {
+      throw new Error('旧邮件同步范围不是有效整数，无法迁移。')
+    }
+    days = value === 0 ? 90 : Math.min(90, Math.max(8, value))
+  }
+  const db = getDatabase()
+  db.exec('SAVEPOINT migrate_sync_ranges')
+  try {
+    writeSetting(settingsDefinition.syncWindowDays.key, String(days), 'number')
+    writeSetting(settingsDefinition.syncBodyWindowDays.key, '7', 'number')
+    writeSetting(settingsDefinition.cacheRetentionDays.key, '0', 'number')
+    writeSetting(settingsDefinition.downloadAttachmentsSeparately.key, '0', 'boolean')
+    writeSetting(settingsDefinition.cleanupMetadata.key, '0', 'boolean')
+    writeSetting('mail_sync_ranges_version', '1', 'number')
+    db.exec('RELEASE migrate_sync_ranges')
+  } catch (error) {
+    db.exec('ROLLBACK TO migrate_sync_ranges')
+    db.exec('RELEASE migrate_sync_ranges')
+    throw error
+  }
 }
 
 function updateMissingSetting(key: string, value: string, valueType: string): void {
@@ -854,7 +926,13 @@ function validateHttpUrl(value: string, label: string): void {
 
 function validateSettings(settings: AppSettings): void {
   validateIntegerRange(settings.syncIntervalMinutes, 0, 1440, '同步间隔')
-  validateIntegerRange(settings.syncWindowDays, 0, 3650, '缓存窗口')
+  validateSyncRanges(settings)
+  if (
+    typeof settings.downloadAttachmentsSeparately !== 'boolean' ||
+    typeof settings.cleanupMetadata !== 'boolean'
+  ) {
+    throw new Error('附件下载与缓存清理选项必须是布尔值。')
+  }
   validateIntegerRange(settings.globalSyncIntervalMinutes, 1, 1440, '全局同步间隔')
   validateIntegerRange(settings.fallbackSyncIntervalMinutes, 1, 1440, '回退同步间隔')
 

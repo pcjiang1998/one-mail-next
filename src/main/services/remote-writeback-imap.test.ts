@@ -8,7 +8,8 @@ import { RemoteMessageMissingError } from '../mail/remote-message-error'
 function fakeSession(rawMessage: string): SimpleImapSession {
   return {
     selectMailbox: vi.fn(async () => undefined),
-    fetchRawMessage: vi.fn(async () => rawMessage)
+    fetchRawMessage: vi.fn(async () => rawMessage),
+    fetchMessageHeaders: vi.fn(async () => rawMessage.split(/\r?\n\r?\n/, 1)[0])
   } as unknown as SimpleImapSession
 }
 
@@ -37,6 +38,7 @@ describe('remote writeback IMAP safety checks', () => {
     const client = fakeSession('Message-ID: <message-42@example.com>\r\nSubject: Hello\r\n\r\nbody')
 
     await expect(selectAndVerifyRemoteMessage(client, identity)).resolves.toBeUndefined()
+    expect(client.fetchRawMessage).not.toHaveBeenCalled()
   })
 
   it('stops before a flag operation when the UID now belongs to another message', async () => {

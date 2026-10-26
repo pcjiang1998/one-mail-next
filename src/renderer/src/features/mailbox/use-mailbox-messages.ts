@@ -3,6 +3,7 @@ import * as React from 'react'
 import type { Account, MailFilterTag, Message } from '@renderer/components/mail/types'
 import {
   downloadAttachment,
+  recordMessageAccess,
   bulkSetMessageReadState,
   loadMessageBody,
   loadMessageDetail as loadMessageDetailApi,
@@ -14,7 +15,6 @@ import {
 } from '@renderer/lib/api'
 import type { MessageBulkReadStateResult, MessageListQuery } from '../../../../shared/types'
 import { useI18n } from '@renderer/lib/i18n'
-import { isVerificationMailCandidate } from '../../../../shared/verification-code'
 import {
   decrementUnreadCount,
   getErrorMessage,
@@ -94,12 +94,18 @@ export function useMailboxMessages({
   const loadMoreRequestTokenRef = React.useRef(0)
   const messageListScopeRef = React.useRef('')
   const markingReadMessageIdsRef = React.useRef<Set<string>>(new Set())
-  const prefetchingVerificationMessageIdsRef = React.useRef<Set<string>>(new Set())
 
   const messagesById = React.useMemo(() => {
     return new Map(messages.map((message) => [message.id, message]))
   }, [messages])
   const selectedMessage = selectedMessageId ? messagesById.get(selectedMessageId) : undefined
+  const accessedMessageId = selectedMessage?.messageId
+  React.useEffect(() => {
+    if (accessedMessageId === undefined) return
+    void recordMessageAccess(accessedMessageId).catch((error: unknown) => {
+      setError(getErrorMessage(error, t('mailbox.loadBodyError')))
+    })
+  }, [accessedMessageId, setError, t])
 
   const beginLoadingBody = React.useCallback((message: Message): boolean => {
     if (message.bodyLoaded || loadingBodyMessageIdsRef.current.has(message.id)) return false
@@ -288,34 +294,6 @@ export function useMailboxMessages({
     },
     [beginLoadingBody, setError, t]
   )
-
-  React.useEffect(() => {
-    const candidates = messages
-      .filter(
-        (message) =>
-          !message.verificationCode &&
-          !message.bodyLoaded &&
-          message.bodyStatus !== 'error' &&
-          !prefetchingVerificationMessageIdsRef.current.has(message.id) &&
-          isVerificationMailCandidate(message.subject, message.preview)
-      )
-      .slice(0, 3)
-
-    for (const message of candidates) {
-      if (!beginLoadingBody(message)) continue
-      prefetchingVerificationMessageIdsRef.current.add(message.id)
-
-      void loadMessageBody(message)
-        .then((detail) => {
-          replaceLoadedMessageBody(message.id, detail, setMessages)
-        })
-        .catch(() => undefined)
-        .finally(() => {
-          loadingBodyMessageIdsRef.current.delete(message.id)
-          prefetchingVerificationMessageIdsRef.current.delete(message.id)
-        })
-    }
-  }, [beginLoadingBody, messages])
 
   const markMessageReadOnOpen = React.useCallback(
     (message: Message): void => {
@@ -578,7 +556,12 @@ function replaceLoadedMessageBody(
 }
 
 function preserveLoadedMessage(next: Message, current: Message | undefined): Message {
-  if (!current || next.detailLoaded || (!current.detailLoaded && !current.bodyLoaded)) {
+  if (
+    !current ||
+    next.detailLoaded ||
+    (current.bodyStatus === 'ready' && next.bodyStatus === 'none') ||
+    (!current.detailLoaded && !current.bodyLoaded)
+  ) {
     return next
   }
 

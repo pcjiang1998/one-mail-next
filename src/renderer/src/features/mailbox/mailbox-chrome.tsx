@@ -237,7 +237,7 @@ export function StatusBar({
         />
         <span>{t('status.accounts', { count: accountCount })}</span>
         <span>{t('status.messages', { count: messageCount })}</span>
-        <span>{t('status.cacheDays', { days: settings?.syncWindowDays ?? 90 })}</span>
+        <span>{t('status.cacheDays', { days: settings?.syncWindowDays ?? 30 })}</span>
       </div>
     </footer>
   )

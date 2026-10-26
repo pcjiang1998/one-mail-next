@@ -4,13 +4,16 @@ import { getSettings } from '../db/repositories/settings.repository'
 import { getDatabase, type SqliteParams } from '../db/connection'
 import { readAccountPassword } from '../services/credential-store'
 import { normalizeMailDisplayText } from '../../shared/mail-text'
-import { persistRawMessageBody } from './body-loader'
+import { loadMessageBodyFromImap, persistRawMessageBody } from './body-loader'
 import { Pop3Session } from './pop3-session'
+import { syncCutoff } from '../../shared/sync-range'
+import { withAccountCacheAccess } from '../services/cache-activity'
 
 export type Pop3SyncStats = {
   scannedCount: number
   insertedCount: number
   updatedCount: number
+  newMailCount: number
 }
 
 type ParsedHeader = {
@@ -26,7 +29,11 @@ type ParsedHeader = {
 
 type ParsedAddress = { name?: string; email: string }
 
-export async function syncPop3Account(accountId: number): Promise<Pop3SyncStats> {
+export function syncPop3Account(accountId: number): Promise<Pop3SyncStats> {
+  return withAccountCacheAccess(accountId, () => syncPop3AccountCore(accountId))
+}
+
+async function syncPop3AccountCore(accountId: number): Promise<Pop3SyncStats> {
   const account = getAccount(accountId)
   if (!account) throw new Error(`Account not found: ${accountId}`)
   if (account.receiveProtocol !== 'pop3') throw new Error('账号不是 POP3 协议。')
@@ -36,22 +43,47 @@ export async function syncPop3Account(accountId: number): Promise<Pop3SyncStats>
   const session = await Pop3Session.connect(account)
   let scannedCount = 0
   let insertedCount = 0
+  let updatedCount = 0
+  let newMailCount = 0
   try {
     await session.login(account.email, password)
     const remoteMessages = await session.listUniqueIds()
+    const sizes = await session.listSizes()
     scannedCount = remoteMessages.length
-    const known = getKnownUidlSet(accountId)
+    const known = getKnownUidlMap(accountId)
     const folderId = ensurePopInbox(accountId)
-    const windowDays = getSettings().syncWindowDays
+    const settings = getSettings()
+    const metadataCutoff = syncCutoff(settings.syncWindowDays)
+    const bodyCutoff = syncCutoff(settings.syncBodyWindowDays)
 
     for (const remote of remoteMessages.slice().reverse()) {
-      if (known.has(remote.uidl)) continue
-      const rawMessage = await session.retrieve(remote.number)
-      const header = parseRawHeader(rawMessage)
-      if (windowDays > 0 && isOlderThanWindow(header.receivedAt, windowDays)) {
-        markUidlSeen(accountId, remote.uidl)
+      const previous = known.get(remote.uidl)
+      if (previous?.message_id) {
+        if (previous.mail_date && previous.mail_date >= bodyCutoff && !previous.body_ready) {
+          await loadMessageBodyFromImap(previous.message_id, () => session.retrieve(remote.number))
+          updatedCount++
+        }
         continue
       }
+      if (previous?.mail_date && previous.mail_date < metadataCutoff) continue
+      let rawMessage = previous?.raw_source ?? undefined
+      let headerSource = rawMessage ?? (await session.retrieveHeaders(remote.number))
+      if (headerSource === undefined) {
+        rawMessage = await session.retrieve(remote.number)
+        headerSource = rawMessage
+      }
+      const header = parseRawHeader(headerSource)
+      if (!header.receivedAt) throw new Error('POP3 邮件缺少有效日期，无法确定同步范围。')
+      if (header.receivedAt < metadataCutoff) {
+        markUidlSeen(accountId, remote.uidl, undefined, header.receivedAt, rawMessage)
+        continue
+      }
+      if (!rawMessage && header.receivedAt >= bodyCutoff)
+        rawMessage = await session.retrieve(remote.number)
+      const sizeBytes = sizes.get(remote.number)
+      if (sizeBytes === undefined) throw new Error('POP3 LIST 响应缺少邮件大小。')
+      const isBackfill =
+        Boolean(previous) || !account.lastSyncAt || header.receivedAt < account.lastSyncAt
 
       const uid = resolveStableUid(accountId, folderId, remote.uidl)
       const db = getDatabase()
@@ -62,35 +94,58 @@ export async function syncPop3Account(accountId: number): Promise<Pop3SyncStats>
           folderId,
           uid,
           remote.uidl,
-          rawMessage,
-          header
+          headerSource,
+          header,
+          sizeBytes,
+          settings.downloadAttachmentsSeparately,
+          isBackfill
         )
-        persistRawMessageBody(messageId, rawMessage)
+        if (rawMessage) persistRawMessageBody(messageId, rawMessage)
         persistAddresses(messageId, header)
-        markUidlSeen(accountId, remote.uidl, messageId)
+        markUidlSeen(accountId, remote.uidl, messageId, header.receivedAt)
+        db.prepare(
+          `INSERT INTO onemail_message_search (message_id, account_id, folder_id, subject, from_name, from_email, snippet, body_text)
+          SELECT message_id, account_id, folder_id, COALESCE(subject, ''), COALESCE(from_name, ''), COALESCE(from_email, ''), COALESCE(snippet, ''), ''
+          FROM onemail_mail_messages WHERE message_id = :messageId
+          AND NOT EXISTS (SELECT 1 FROM onemail_message_search WHERE message_id = :messageId)`
+        ).run({ messageId })
         db.exec('COMMIT')
       } catch (error) {
         db.exec('ROLLBACK')
         throw error
       }
       insertedCount += 1
+      if (!isBackfill) newMailCount++
     }
     updatePopFolderCounts(folderId)
     markAccountSynced(accountId)
-    return { scannedCount, insertedCount, updatedCount: 0 }
+    return { scannedCount, insertedCount, updatedCount, newMailCount }
   } finally {
     await session.quit()
   }
 }
 
-function getKnownUidlSet(accountId: number): Set<string> {
-  return new Set(
+type KnownPopMessage = {
+  uidl: string
+  message_id: number | null
+  mail_date: string | null
+  raw_source: string | null
+  body_ready: number
+}
+
+function getKnownUidlMap(accountId: number): Map<string, KnownPopMessage> {
+  return new Map(
     getDatabase()
-      .prepare<{ uidl: string }>(
-        'SELECT uidl FROM onemail_pop3_messages WHERE account_id = :accountId'
+      .prepare<KnownPopMessage>(
+        `SELECT p.uidl, p.message_id, COALESCE(m.received_at, m.internal_date, p.mail_date) AS mail_date,
+          p.raw_source, (b.message_id IS NOT NULL AND m.body_status = 'ready') AS body_ready
+         FROM onemail_pop3_messages p
+         LEFT JOIN onemail_mail_messages m ON m.message_id = p.message_id
+         LEFT JOIN onemail_message_bodies b ON b.message_id = p.message_id
+         WHERE p.account_id = :accountId`
       )
       .all({ accountId })
-      .map((row) => row.uidl)
+      .map((row) => [row.uidl, row])
   )
 }
 
@@ -120,7 +175,10 @@ function persistPopMessage(
   uid: number,
   uidl: string,
   rawMessage: string,
-  header: ParsedHeader
+  header: ParsedHeader,
+  sizeBytes: number,
+  downloadAttachmentsSeparately: boolean,
+  isBackfill: boolean
 ): number {
   const messageKey = header.messageId ?? `pop3:${uidl}`
   const params: SqliteParams = {
@@ -134,18 +192,20 @@ function persistPopMessage(
     receivedAt: header.receivedAt ?? null,
     internalDate: header.receivedAt ?? new Date().toISOString(),
     snippet: header.subject ?? '',
-    sizeBytes: Buffer.byteLength(rawMessage, 'utf8'),
-    rawHeaders: rawMessage.split(/\r?\n\r?\n/, 1)[0]
+    sizeBytes,
+    rawHeaders: rawMessage.split(/\r?\n\r?\n/, 1)[0],
+    downloadAttachmentsSeparately: downloadAttachmentsSeparately ? 1 : 0,
+    syncBackfill: isBackfill ? 1 : 0
   }
   const db = getDatabase()
   db.prepare(
     `INSERT INTO onemail_mail_messages (
        account_id, folder_id, uid, rfc822_message_id, subject, from_name, from_email,
        received_at, internal_date, snippet, size_bytes, is_read, flags_json,
-       raw_headers, body_status
+       raw_headers, body_status, download_attachments_separately, sync_backfill
      ) VALUES (
        :accountId, :folderId, :uid, :rfc822MessageId, :subject, :fromName, :fromEmail,
-       :receivedAt, :internalDate, :snippet, :sizeBytes, 0, '[]', :rawHeaders, 'none'
+       :receivedAt, :internalDate, :snippet, :sizeBytes, 0, '[]', :rawHeaders, 'none', :downloadAttachmentsSeparately, :syncBackfill
      )`
   ).run(params)
   const row = db
@@ -188,16 +248,30 @@ function persistAddresses(messageId: number, header: ParsedHeader): void {
   }
 }
 
-function markUidlSeen(accountId: number, uidl: string, messageId?: number): void {
+function markUidlSeen(
+  accountId: number,
+  uidl: string,
+  messageId?: number,
+  mailDate?: string,
+  rawSource?: string
+): void {
   getDatabase()
     .prepare(
-      `INSERT INTO onemail_pop3_messages (account_id, uidl, message_id)
-       VALUES (:accountId, :uidl, :messageId)
+      `INSERT INTO onemail_pop3_messages (account_id, uidl, message_id, mail_date, raw_source)
+       VALUES (:accountId, :uidl, :messageId, :mailDate, :rawSource)
        ON CONFLICT(account_id, uidl) DO UPDATE SET
          message_id = COALESCE(excluded.message_id, onemail_pop3_messages.message_id),
+         mail_date = excluded.mail_date,
+         raw_source = excluded.raw_source,
          seen_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`
     )
-    .run({ accountId, uidl, messageId: messageId ?? null })
+    .run({
+      accountId,
+      uidl,
+      messageId: messageId ?? null,
+      mailDate: mailDate ?? null,
+      rawSource: rawSource ?? null
+    })
 }
 
 function resolveStableUid(accountId: number, folderId: number, uidl: string): number {
@@ -257,11 +331,6 @@ function parseAddresses(value?: string): ParsedAddress[] {
       return email ? { name: name || undefined, email } : undefined
     })
     .filter((item): item is { name: string | undefined; email: string } => Boolean(item))
-}
-
-function isOlderThanWindow(receivedAt: string | undefined, days: number): boolean {
-  if (!receivedAt) return false
-  return new Date(receivedAt).getTime() < Date.now() - days * 24 * 60 * 60 * 1000
 }
 
 function updatePopFolderCounts(folderId: number): void {

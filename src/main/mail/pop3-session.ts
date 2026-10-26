@@ -31,6 +31,7 @@ type PopInput = Pick<
 const RESPONSE_TIMEOUT_MS = 30000
 
 export class Pop3Session {
+  private topSupported = true
   private constructor(private socket: Socket | TLSSocket) {}
 
   static async connect(account: PopAccount | PopInput): Promise<Pop3Session> {
@@ -69,6 +70,28 @@ export class Pop3Session {
     return this.multi(`RETR ${number}`)
   }
 
+  async retrieveHeaders(number: number): Promise<string | undefined> {
+    if (!this.topSupported) return undefined
+    if (!Number.isSafeInteger(number) || number <= 0) throw new Error('POP3 邮件编号无效。')
+    try {
+      return await this.multi(`TOP ${number} 0`)
+    } catch (error) {
+      if (!(error instanceof Pop3NegativeResponseError)) throw error
+      this.topSupported = false
+      return undefined
+    }
+  }
+
+  async listSizes(): Promise<Map<number, number>> {
+    const response = await this.multi('LIST')
+    const sizes = new Map<number, number>()
+    for (const line of response.split(/\r?\n/)) {
+      const match = /^(\d+)\s+(\d+)$/.exec(line.trim())
+      if (match) sizes.set(Number(match[1]), Number(match[2]))
+    }
+    return sizes
+  }
+
   async quit(): Promise<void> {
     if (this.socket.destroyed) return
     await this.single('QUIT').catch(() => undefined)
@@ -93,10 +116,14 @@ export class Pop3Session {
 
   private async readPositiveLine(errorPrefix: string): Promise<string> {
     const line = (await readUntil(this.socket, Buffer.from('\r\n'))).toString('utf8').trim()
+    if (line.startsWith('-ERR'))
+      throw new Pop3NegativeResponseError(`${errorPrefix}：${line.slice(0, 240)}`)
     if (!line.startsWith('+OK')) throw new Error(`${errorPrefix}：${line.slice(0, 240)}`)
     return line.slice(3).trim()
   }
 }
+
+class Pop3NegativeResponseError extends Error {}
 
 export async function testPop3Connection(input: AccountCreateInput): Promise<void> {
   if (!input.email?.trim()) throw new Error('请输入邮箱地址。')

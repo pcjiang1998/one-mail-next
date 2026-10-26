@@ -41,7 +41,7 @@ This software is based on the [one-mail](https://github.com/zhihui-hu/one-mail) 
 - **Task board and reminders**: turn messages into tasks, add notes, change task status, and schedule reminders.
 - **Remote content privacy**: strict, loose, and unrestricted modes, with per-account overrides and trusted sender addresses or domains.
 - **Mail rules**: process newly synchronized messages by recipient, sender, subject, body, and attachment conditions; mark as read, add to the board, or move to Deleted.
-- **Configurable sync policy**: control sync interval, cache window, and external image behavior.
+- **Configurable sync policy**: configure metadata range, full-message range, local cache retention, and attachment downloads independently.
 - **Folder-level sync**: refresh remote folders with IMAP `LIST` while editing an account, then select folders to sync in addition to INBOX.
 
 ---
@@ -72,7 +72,7 @@ OneMail uses a three-column desktop layout:
 
 The composer is a floating Gmail-like window. It can expand or restore, CC/BCC fields open on demand, and the footer contains send, formatting, attachment, link, save draft, and discard actions.
 
-Settings fill the application window, with navigation on the left, content on the right, and a back button at the top left. Sections include General, Mailbox Management, Sync, Notifications, Signatures, Network, Remote Content Privacy, Mail Rules, Translation, Backup, and About. Privacy and rules are edited inside settings. About includes version information, the project link, and manual update checks.
+Settings fill the application window, with navigation on the left, content on the right, and a back button at the top left. Sections include General, Mailbox Management, Mail Sync, Mail Sync Ranges, Notifications, Signatures, Network, Remote Content Privacy, Mail Rules, Translation, Backup, and About. Privacy and rules are edited inside settings. About includes version information, the project link, and manual update checks.
 
 When no account exists, you can add an account or restore a SQL backup directly.
 
@@ -182,6 +182,14 @@ pnpm exec electron-builder --win --dir --publish never --x64
 ### Notifications and Backup Scope
 
 Set desktop notifications when adding or editing an account. Settings > Notifications provides individual switches and enable-all/disable-all actions. General settings retain the default for newly added accounts, initially enabled; changing that default does not change existing accounts.
+
+Settings > Mail Sync Ranges defaults to 30 days of metadata, 7 days of message content, and 0 days of cache retention (cleanup disabled). Metadata is limited to 90 days and content to 30 days, with metadata range strictly greater than content range. IMAP and POP3 fill missing local data by message date regardless of read state. Reducing a range does not remove existing caches.
+
+Nonzero retention must exceed the metadata range. Cleanup runs at startup and every 24 hours, using the later of the message date and last user access. It clears only expired bodies and attachment content unless metadata cleanup is explicitly enabled. Board-linked mail is protected regardless of task status. A retention value of 0 also disables manual cleanup. Cleanup never deletes or moves server messages or removes separately saved attachment files.
+
+Attachments are downloaded with the body by default. The separate-download option is captured when a message's metadata is first fetched; changing it does not alter existing messages or redownload cached bodies to fill attachments. POP3 may need to retrieve complete messages; extra content is retained and reused. Cached attachments display "Save (cached)".
+
+On upgrade, the legacy sync window becomes the metadata range: 0 becomes 90, and other valid integers are clamped to 8-90. Content range starts at 7 and cache retention at 0. Migration never deletes caches.
 
 In Settings > Backup, **Include mail in backup** is checked by default and applies to both local SQL exports and WebDAV / S3 uploads. Both modes preserve accounts and credentials, contacts, privacy policies and trusted senders, notification preferences, folder selections, proxies, signatures, sync preferences, mail rules, global translation settings and service keys, remote backup configuration, and other database-backed app settings.
 

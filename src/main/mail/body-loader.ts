@@ -1,8 +1,13 @@
 import { getAccount } from '../db/repositories/account.repository'
 import { getDatabase, type SqliteParams } from '../db/connection'
 import type { MailMessageBody } from '../ipc/types'
-import { normalizeMailBodyText, normalizeMailDisplayText } from '../../shared/mail-text'
+import { normalizeMailBodyText } from '../../shared/mail-text'
 import { SimpleImapSession } from './imap-session'
+import { parseBodyStructure } from './imap-body-structure'
+import { readMimeFilename } from './mime-parameter'
+import { withMessageCacheAccess } from '../services/cache-activity'
+import { Pop3Session } from './pop3-session'
+import { readAccountPassword } from '../services/credential-store'
 import { authenticateImapSession } from './imap-auth'
 import {
   getMessageRawSource,
@@ -23,17 +28,21 @@ type MessageLocator = {
   folder_path: string
   uid: number
   remote_missing: number
+  download_attachments_separately: number
 }
 
 type ParsedMimePart = {
   headers: Map<string, string>
   body: string
+  partId?: string
 }
 
 type ParsedMessageBody = {
   text?: string
   html?: string
   attachments: Array<{
+    partId?: string
+    contentId?: string
     filename: string
     mimeType?: string
     contentDisposition?: 'attachment' | 'inline'
@@ -45,7 +54,25 @@ export type ParsedMessageAttachment = ParsedMessageBody['attachments'][number] &
   content: Buffer
 }
 
-export async function loadMessageBodyFromImap(messageId: number): Promise<MailMessageBody | null> {
+const bodyLoads = new Map<number, Promise<MailMessageBody | null>>()
+
+export function loadMessageBodyFromImap(
+  messageId: number,
+  fetchRaw?: () => Promise<string>
+): Promise<MailMessageBody | null> {
+  const existing = bodyLoads.get(messageId)
+  if (existing) return existing
+  const pending = withMessageCacheAccess(messageId, () =>
+    loadMessageBodyFromServer(messageId, fetchRaw)
+  ).finally(() => bodyLoads.delete(messageId))
+  bodyLoads.set(messageId, pending)
+  return pending
+}
+
+async function loadMessageBodyFromServer(
+  messageId: number,
+  fetchRaw?: () => Promise<string>
+): Promise<MailMessageBody | null> {
   const cachedBody = loadMessageBody(messageId)
   if (cachedBody) return cachedBody
   const rawSource = getMessageRawSource(messageId)
@@ -73,6 +100,10 @@ export async function loadMessageBodyFromImap(messageId: number): Promise<MailMe
 
   let client: SimpleImapSession | undefined
   try {
+    if (fetchRaw) return persistRawMessageBody(messageId, await fetchRaw())
+    if (account.receiveProtocol === 'pop3') {
+      return persistRawMessageBody(messageId, await retrievePop3Message(messageId))
+    }
     client = await SimpleImapSession.connect(account, 'B')
     await authenticateImapSession(account, client)
     const identity = getRemoteMessageIdentity(messageId)
@@ -81,6 +112,25 @@ export async function loadMessageBodyFromImap(messageId: number): Promise<MailMe
         throw new RemoteMessageMissingError()
       }
       throw new Error('邮件远端定位信息已失效，请先同步邮件。')
+    }
+    if (locator.download_attachments_separately) {
+      await fetchVerifiedRemoteMessage(client, identity, true)
+      const parts = parseBodyStructure(await client.fetchBodyStructure(identity.uid))
+      const parsed: ParsedMessageBody = { attachments: [] }
+      for (const part of parts) {
+        if (part.filename) {
+          parsed.attachments.push(part as ParsedMessageBody['attachments'][number])
+          continue
+        }
+        if (part.mimeType !== 'text/plain' && part.mimeType !== 'text/html') continue
+        const headers = await client.fetchBodySection(identity.uid, `${part.partId}.MIME`)
+        const content = await client.fetchBodySection(identity.uid, part.partId)
+        const decoded = decodePartBody({ headers: parseHeaders(headers), body: content })
+        if (part.mimeType === 'text/plain')
+          parsed.text = [parsed.text, decoded].filter(Boolean).join('\n')
+        else parsed.html = [parsed.html, decoded].filter(Boolean).join('\n')
+      }
+      return persistMessageBody(messageId, parsed)
     }
     const rawMessage = await fetchVerifiedRemoteMessage(client, identity)
     const parsed = parseMimeMessage(rawMessage)
@@ -115,6 +165,28 @@ export async function loadMessageBodyFromImap(messageId: number): Promise<MailMe
   }
 }
 
+export async function retrievePop3Message(messageId: number): Promise<string> {
+  const row = getDatabase()
+    .prepare<{
+      account_id: number
+      uidl: string
+    }>(`SELECT account_id, uidl FROM onemail_pop3_messages WHERE message_id = :messageId`)
+    .get({ messageId })
+  if (!row) throw new Error('POP3 邮件缺少 UIDL 定位信息。')
+  const account = getAccount(row.account_id)
+  const password = readAccountPassword(row.account_id)
+  if (!account || !password) throw new Error('POP3 账号或凭据不存在。')
+  const session = await Pop3Session.connect(account)
+  try {
+    await session.login(account.email, password)
+    const remote = (await session.listUniqueIds()).find((item) => item.uidl === row.uidl)
+    if (!remote) throw new RemoteMessageMissingError()
+    return await session.retrieve(remote.number)
+  } finally {
+    await session.quit()
+  }
+}
+
 function getMessageLocator(messageId: number): MessageLocator | null {
   const row = getDatabase()
     .prepare<MessageLocator>(
@@ -124,7 +196,8 @@ function getMessageLocator(messageId: number): MessageLocator | null {
         m.account_id,
         f.path AS folder_path,
         m.uid,
-        m.remote_missing
+        m.remote_missing,
+        m.download_attachments_separately
       FROM onemail_mail_messages m
       JOIN onemail_mail_folders f ON f.folder_id = m.folder_id
       WHERE m.message_id = :messageId
@@ -147,16 +220,18 @@ function persistMessageBody(
   const bodyText = normalizeMailBodyText(parsed.text)
   const bodyHtml = sanitizeCachedMailHtml(parsed.html)
   const db = getDatabase()
-  const params: SqliteParams = {
-    messageId,
-    bodyText: bodyText ?? null,
-    bodyHtml: bodyHtml ?? null,
-    rawSource: rawSource ?? null,
-    externalImagesBlocked: 1
-  }
+  db.exec('SAVEPOINT persist_message_body')
+  try {
+    const params: SqliteParams = {
+      messageId,
+      bodyText: bodyText ?? null,
+      bodyHtml: bodyHtml ?? null,
+      rawSource: rawSource ?? null,
+      externalImagesBlocked: 1
+    }
 
-  db.prepare(
-    `
+    db.prepare(
+      `
     INSERT INTO onemail_message_bodies (
       message_id,
       body_text,
@@ -182,43 +257,54 @@ function persistMessageBody(
       loaded_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     `
-  ).run(params)
+    ).run(params)
 
-  db.prepare('DELETE FROM onemail_message_attachments WHERE message_id = :messageId').run({
-    messageId
-  })
+    const existingAttachments = db
+      .prepare<{
+        attachment_id: number
+        part_id: string | null
+        filename: string
+        mime_type: string | null
+      }>(
+        'SELECT attachment_id, part_id, filename, mime_type FROM onemail_message_attachments WHERE message_id = :messageId ORDER BY attachment_id'
+      )
+      .all({ messageId })
+    const usedIds = new Set<number>()
+    for (const attachment of parsed.attachments) {
+      const existing = existingAttachments.find(
+        (row) =>
+          !usedIds.has(row.attachment_id) &&
+          (row.part_id
+            ? row.part_id === attachment.partId
+            : row.filename === attachment.filename && row.mime_type === attachment.mimeType)
+      )
+      const attachmentParams = {
+        messageId,
+        partId: attachment.partId ?? null,
+        contentId: attachment.contentId ?? null,
+        filename: attachment.filename,
+        mimeType: attachment.mimeType ?? null,
+        contentDisposition: attachment.contentDisposition ?? 'attachment',
+        sizeBytes: attachment.sizeBytes
+      }
+      if (existing) {
+        usedIds.add(existing.attachment_id)
+        db.prepare(
+          `UPDATE onemail_message_attachments SET part_id = :partId, content_id = :contentId,
+        filename = :filename, mime_type = :mimeType, content_disposition = :contentDisposition, size_bytes = :sizeBytes
+        WHERE attachment_id = :attachmentId AND message_id = :messageId`
+        ).run({ ...attachmentParams, attachmentId: existing.attachment_id })
+      } else {
+        db.prepare(
+          `INSERT INTO onemail_message_attachments
+        (message_id, part_id, content_id, filename, mime_type, content_disposition, size_bytes)
+        VALUES (:messageId, :partId, :contentId, :filename, :mimeType, :contentDisposition, :sizeBytes)`
+        ).run(attachmentParams)
+      }
+    }
 
-  const insertAttachment = db.prepare(
-    `
-    INSERT INTO onemail_message_attachments (
-      message_id,
-      filename,
-      mime_type,
-      content_disposition,
-      size_bytes
-    )
-    VALUES (
-      :messageId,
-      :filename,
-      :mimeType,
-      :contentDisposition,
-      :sizeBytes
-    )
-    `
-  )
-
-  for (const attachment of parsed.attachments) {
-    insertAttachment.run({
-      messageId,
-      filename: attachment.filename,
-      mimeType: attachment.mimeType ?? null,
-      contentDisposition: attachment.contentDisposition ?? 'attachment',
-      sizeBytes: attachment.sizeBytes
-    })
-  }
-
-  db.prepare(
-    `
+    db.prepare(
+      `
     UPDATE onemail_mail_messages
     SET has_attachments = :hasAttachments,
         body_status = 'ready',
@@ -226,18 +312,24 @@ function persistMessageBody(
         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     WHERE message_id = :messageId
     `
-  ).run({
-    messageId,
-    hasAttachments: parsed.attachments.length > 0 ? 1 : 0
-  })
+    ).run({
+      messageId,
+      hasAttachments: parsed.attachments.length > 0 ? 1 : 0
+    })
 
-  updateMessageSearchIndex(messageId, bodyText ?? htmlToSearchText(bodyHtml) ?? '')
+    updateMessageSearchIndex(messageId, bodyText ?? htmlToSearchText(bodyHtml) ?? '')
+    db.exec('RELEASE persist_message_body')
 
-  return {
-    messageId,
-    bodyText,
-    bodyHtmlSanitized: bodyHtml,
-    externalImagesBlocked: true
+    return {
+      messageId,
+      bodyText,
+      bodyHtmlSanitized: bodyHtml,
+      externalImagesBlocked: true
+    }
+  } catch (error) {
+    db.exec('ROLLBACK TO persist_message_body')
+    db.exec('RELEASE persist_message_body')
+    throw error
   }
 }
 
@@ -324,8 +416,12 @@ function htmlToSearchText(value?: string): string | undefined {
 function parseMimeMessage(rawMessage: string): ParsedMessageBody {
   const root = splitHeaderAndBody(rawMessage)
   const parts = flattenMimeParts(root.headers, root.body)
-  const textPart = parts.find((part) => getContentType(part.headers).mimeType === 'text/plain')
-  const htmlPart = parts.find((part) => getContentType(part.headers).mimeType === 'text/html')
+  const textPart = parts.find(
+    (part) => !mapAttachmentPart(part) && getContentType(part.headers).mimeType === 'text/plain'
+  )
+  const htmlPart = parts.find(
+    (part) => !mapAttachmentPart(part) && getContentType(part.headers).mimeType === 'text/html'
+  )
   const attachments = parts
     .map((part) => mapAttachmentPart(part))
     .filter((attachment): attachment is ParsedMessageBody['attachments'][number] =>
@@ -349,15 +445,27 @@ export function parseMimeAttachments(rawMessage: string): ParsedMessageAttachmen
     .filter((attachment): attachment is ParsedMessageAttachment => Boolean(attachment))
 }
 
-function flattenMimeParts(headers: Map<string, string>, body: string): ParsedMimePart[] {
+function flattenMimeParts(
+  headers: Map<string, string>,
+  body: string,
+  prefix = ''
+): ParsedMimePart[] {
   const { mimeType, boundary } = getContentType(headers)
-  if (!mimeType.startsWith('multipart/') || !boundary) {
-    return [{ headers, body }]
+  if (
+    !mimeType.startsWith('multipart/') ||
+    !boundary ||
+    (prefix && getContentDisposition(headers).value === 'attachment')
+  ) {
+    return [{ headers, body, partId: prefix || '1' }]
   }
 
-  return splitMultipartBody(body, boundary).flatMap((part) => {
+  return splitMultipartBody(body, boundary).flatMap((part, index) => {
     const parsedPart = splitHeaderAndBody(part)
-    return flattenMimeParts(parsedPart.headers, parsedPart.body)
+    return flattenMimeParts(
+      parsedPart.headers,
+      parsedPart.body,
+      prefix ? `${prefix}.${index + 1}` : String(index + 1)
+    )
   })
 }
 
@@ -409,21 +517,30 @@ function splitMultipartBody(body: string, boundary: string): string[] {
 function mapAttachmentPart(part: ParsedMimePart): ParsedMessageBody['attachments'][number] | null {
   const contentType = getContentType(part.headers)
   const disposition = getContentDisposition(part.headers)
-  const filename = disposition.filename ?? contentType.name
-
-  if (!filename) return null
-  if (disposition.value !== 'attachment' && disposition.value !== 'inline') return null
+  const givenName = disposition.filename ?? contentType.name
+  if (!givenName && disposition.value !== 'attachment' && contentType.mimeType.startsWith('text/'))
+    return null
+  const subtype = contentType.mimeType.split('/')[1]
+  const filename =
+    givenName ??
+    `part-${part.partId ?? '1'}.${subtype === 'rfc822' ? 'eml' : contentType.mimeType.startsWith('multipart/') ? 'mime' : subtype}`
 
   return {
+    partId: part.partId,
+    contentId: part.headers.get('content-id'),
     filename,
     mimeType: contentType.mimeType,
-    contentDisposition: disposition.value,
-    sizeBytes: estimateDecodedSize(part.body, part.headers.get('content-transfer-encoding'))
+    contentDisposition: disposition.value ?? 'attachment',
+    sizeBytes: decodePartBytes(part).byteLength
   }
 }
 
 function decodePartBody(part: ParsedMimePart): string {
   return decodeBytes(decodePartBytes(part), getContentType(part.headers).charset)
+}
+
+export function decodeMimePart(headers: string, body: string): Buffer {
+  return decodePartBytes({ headers: parseHeaders(headers), body })
 }
 
 function decodePartBytes(part: ParsedMimePart): Buffer {
@@ -471,7 +588,7 @@ function getContentType(headers: Map<string, string>): {
     mimeType: value.split(';')[0]?.trim().toLowerCase() || 'text/plain',
     charset: params.get('charset') ?? 'utf-8',
     boundary: params.get('boundary'),
-    name: normalizeMailDisplayText(params.get('name'))
+    name: readMimeFilename(params, 'name')
   }
 }
 
@@ -486,9 +603,7 @@ function getContentDisposition(headers: Map<string, string>): {
   return {
     value:
       disposition === 'inline' ? 'inline' : disposition === 'attachment' ? 'attachment' : undefined,
-    filename:
-      normalizeMailDisplayText(params.get('filename*')) ??
-      normalizeMailDisplayText(params.get('filename'))
+    filename: readMimeFilename(params, 'filename')
   }
 }
 
@@ -504,22 +619,10 @@ function parseHeaderParams(value: string): Map<string, string> {
       .slice(index + 1)
       .trim()
       .replace(/^"|"$/g, '')
-    params.set(key, decodeRfc2231Value(rawValue))
+    params.set(key, rawValue)
   }
 
   return params
-}
-
-function decodeRfc2231Value(value: string): string {
-  const match = value.match(/^([^']*)''(.+)$/)
-  if (!match) return value
-
-  try {
-    const decoded = decodeURIComponent(match[2])
-    return decodeBytes(Buffer.from(decoded, 'utf8'), match[1] || 'utf-8')
-  } catch {
-    return value
-  }
 }
 
 function decodeBytes(bytes: Uint8Array, charset: string): string {
@@ -569,12 +672,4 @@ export function sanitizeCachedMailHtml(value?: string): string | undefined {
     .trim()
 
   return sanitized || undefined
-}
-
-function estimateDecodedSize(value: string, encoding?: string): number {
-  if (encoding?.toLowerCase() === 'base64') {
-    return Buffer.byteLength(value.replace(/\s+/g, ''), 'base64')
-  }
-
-  return Buffer.byteLength(value, 'utf8')
 }

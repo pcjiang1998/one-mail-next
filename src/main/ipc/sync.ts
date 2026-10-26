@@ -60,7 +60,7 @@ async function syncAccountWithNotification(
     notifyNewMail({
       accountId,
       reason,
-      messageCount: result.insertedCount
+      messageCount: result.newMailCount
     })
   }
   return result

@@ -7,7 +7,7 @@ import {
   updateBackupSyncSettings,
   updateSettings
 } from '../db/repositories/settings.repository'
-import { cleanupMessageCache } from '../db/repositories/cache.repository'
+import { cleanLocalMailCache } from '../services/cache-maintenance'
 import {
   downloadBackupSync,
   downloadBackupSyncFromSettings,
@@ -48,7 +48,22 @@ export function registerSettingsIpc(): void {
   ipcMain.handle('settings/deleteSignature', (_event, signatureId: number) =>
     deleteSignature(signatureId)
   )
-  ipcMain.handle('settings/cleanupCache', (_event, days: number) => cleanupMessageCache(days))
+  ipcMain.handle('settings/cleanupCache', (_event, input: unknown) => {
+    if (
+      !input ||
+      typeof input !== 'object' ||
+      !('cacheRetentionDays' in input) ||
+      typeof input.cacheRetentionDays !== 'number' ||
+      !('cleanupMetadata' in input) ||
+      typeof input.cleanupMetadata !== 'boolean'
+    ) {
+      throw new Error('缓存清理请求缺少已确认的保留天数和元信息清理选项。')
+    }
+    return cleanLocalMailCache({
+      cacheRetentionDays: input.cacheRetentionDays,
+      cleanupMetadata: input.cleanupMetadata
+    })
+  })
   ipcMain.handle('settings/getBackupSync', () => getBackupSyncSettings())
   ipcMain.handle('settings/updateBackupSync', (_event, input: BackupSyncSettings) =>
     updateBackupSyncSettings(input)

@@ -98,7 +98,22 @@ const TABLE_COLUMN_UPGRADES: Record<string, ColumnDefinition[]> = {
     }
   ],
   onemail_message_bodies: [{ name: 'raw_source', definition: 'raw_source TEXT' }],
+  onemail_message_attachments: [{ name: 'cached_content', definition: 'cached_content BLOB' }],
+  onemail_pop3_messages: [
+    { name: 'mail_date', definition: 'mail_date TEXT' },
+    { name: 'raw_source', definition: 'raw_source TEXT' }
+  ],
   onemail_mail_messages: [
+    {
+      name: 'download_attachments_separately',
+      definition:
+        'download_attachments_separately INTEGER NOT NULL DEFAULT 0 CHECK (download_attachments_separately IN (0, 1))'
+    },
+    { name: 'last_user_accessed_at', definition: 'last_user_accessed_at TEXT' },
+    {
+      name: 'sync_backfill',
+      definition: 'sync_backfill INTEGER NOT NULL DEFAULT 0 CHECK (sync_backfill IN (0, 1))'
+    },
     {
       name: 'read_state_revision',
       definition: 'read_state_revision INTEGER NOT NULL DEFAULT 0 CHECK (read_state_revision >= 0)'

@@ -53,6 +53,54 @@ describe('settings repository backup sync', () => {
     }
   })
 
+  it('initializes independent sync ranges without enabling cleanup', () => {
+    expect(getSettings()).toMatchObject({
+      syncWindowDays: 30,
+      syncBodyWindowDays: 7,
+      cacheRetentionDays: 0,
+      cleanupMetadata: false,
+      downloadAttachmentsSeparately: false
+    })
+  })
+
+  it.each([
+    [0, 90],
+    [1, 8],
+    [7, 8],
+    [8, 8],
+    [60, 60],
+    [90, 90],
+    [360, 90],
+    [-5, 8]
+  ])('migrates the legacy window %s to %s exactly once', (old, expected) => {
+    getDatabase()
+      .prepare(
+        `INSERT INTO onemail_app_settings (setting_key, setting_value, value_type)
+        VALUES ('sync_window_days', :value, 'number')`
+      )
+      .run({ value: String(old) })
+    expect(getSettings()).toMatchObject({
+      syncWindowDays: expected,
+      syncBodyWindowDays: 7,
+      cacheRetentionDays: 0
+    })
+    updateSettings({ syncWindowDays: 5, syncBodyWindowDays: 2 })
+    expect(getSettings()).toMatchObject({ syncWindowDays: 5, syncBodyWindowDays: 2 })
+  })
+
+  it('validates the combined tuple before saving any field', () => {
+    updateSettings({ syncWindowDays: 40, syncBodyWindowDays: 12, cacheRetentionDays: 50 })
+    expect(() => updateSettings({ syncWindowDays: 60, syncBodyWindowDays: 20 })).toThrow()
+    expect(getSettings()).toMatchObject({
+      syncWindowDays: 40,
+      syncBodyWindowDays: 12,
+      cacheRetentionDays: 50
+    })
+    expect(() => updateSettings({ syncWindowDays: 91 })).toThrow('90')
+    expect(() => updateSettings({ syncBodyWindowDays: 31 })).toThrow('30')
+    expect(() => updateSettings({ syncBodyWindowDays: 0 })).toThrow()
+  })
+
   it('stores encrypted backup sync settings using a schema-compatible value type', () => {
     const saved = updateBackupSyncSettings({
       provider: 'webdav',
@@ -173,8 +221,8 @@ describe('settings repository backup sync', () => {
   })
 
   it('accepts an unlimited cache window and validates advanced settings', () => {
-    expect(updateSettings({ syncWindowDays: 0 }).syncWindowDays).toBe(0)
-    expect(() => updateSettings({ syncWindowDays: -1 })).toThrow('缓存窗口')
+    expect(updateSettings({ cacheRetentionDays: 0 }).cacheRetentionDays).toBe(0)
+    expect(() => updateSettings({ syncWindowDays: -1 })).toThrow('同步范围')
     expect(
       updateSettings({ globalProxyMode: 'custom', globalProxyUrl: 'http://127.0.0.1:8080' })
         .globalProxyUrl

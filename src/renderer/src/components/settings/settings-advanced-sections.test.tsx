@@ -16,6 +16,10 @@ import { SignatureSettings } from './settings-advanced-sections'
 const settings: AppSettings = {
   syncIntervalMinutes: 15,
   syncWindowDays: 90,
+  syncBodyWindowDays: 7,
+  cacheRetentionDays: 0,
+  downloadAttachmentsSeparately: false,
+  cleanupMetadata: false,
   openAtLogin: false,
   defaultDesktopNotificationsEnabled: true,
   externalImagesBlocked: true,

@@ -1,6 +1,7 @@
 import { app, dialog } from 'electron'
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
+import { isUint8Array } from 'node:util/types'
 import {
   closeDatabase,
   getDatabase,
@@ -554,7 +555,7 @@ function formatSqlValue(value: unknown): string {
   if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'NULL'
   if (typeof value === 'bigint') return String(value)
   if (typeof value === 'boolean') return value ? '1' : '0'
-  if (Buffer.isBuffer(value)) return `X'${value.toString('hex')}'`
+  if (isUint8Array(value)) return `X'${Buffer.from(value).toString('hex')}'`
 
   return `'${String(value).replace(/'/g, "''")}'`
 }

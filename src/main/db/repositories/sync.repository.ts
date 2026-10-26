@@ -19,6 +19,7 @@ export type AccountSyncResult = {
   scannedCount: number
   insertedCount: number
   updatedCount: number
+  newMailCount: number
 }
 
 const activeAccountSyncs = new Map<number, Promise<AccountSyncResult>>()
@@ -90,6 +91,7 @@ function listNewInboxMessageIds(accountId: number, startedAt: string): number[] 
        WHERE m.account_id = :accountId
          AND f.role = 'inbox'
          AND m.created_at >= :startedAt
+         AND m.sync_backfill = 0
        ORDER BY m.message_id`
     )
     .all({ accountId, startedAt })
@@ -131,6 +133,7 @@ async function syncSingleAccount(
     // The protocol-specific sync has committed its message writes at this point. Use the
     // insertion timestamp as a conservative admission boundary so rules never scan history or
     // re-run on ordinary header updates. Initial sync is explicitly skipped by the rule engine.
+    // Range backfills have their own marker and cannot enter the new-message rule queue.
     try {
       const newMessageIds = listNewInboxMessageIds(accountId, startedAt)
       enqueueMailRulesForNewMessages(newMessageIds, { initialSync: mode === 'initial' })

@@ -771,7 +771,7 @@ function AttachmentList({
                       ) : (
                         <Download data-icon="inline-start" />
                       )}
-                      {t('common.download')}
+                      {t(attachment.cached ? 'mail.attachment.saveCached' : 'common.save')}
                     </Button>
                   </TableCell>
                 </TableRow>

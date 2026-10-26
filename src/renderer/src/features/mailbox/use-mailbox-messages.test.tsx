@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@renderer/lib/api', () => ({
   downloadAttachment: vi.fn(),
+  recordMessageAccess: vi.fn(async () => undefined),
   bulkSetMessageReadState: vi.fn(),
   loadMessageBody: vi.fn(),
   loadMessageDetail: vi.fn(),

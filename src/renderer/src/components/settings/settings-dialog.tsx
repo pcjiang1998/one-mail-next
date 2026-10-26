@@ -47,7 +47,6 @@ import {
 import { getBackupSyncSettingsKey } from '@renderer/components/backup/backup-sync-draft'
 import { BackupSyncFields } from '@renderer/components/backup/backup-sync-fields'
 import {
-  CacheCleanupControl,
   NetworkSettings,
   SignatureSettings,
   SyncSettings
@@ -58,6 +57,7 @@ import { Dialog, DialogContent, DialogTitle } from '@renderer/components/ui/dial
 import { PrivacySettings } from './privacy-settings'
 import { MailRulesSettings } from './mail-rules-settings'
 import { NotificationSettings } from './notification-settings'
+import { SyncRangeSettings } from './sync-range-settings'
 import { Checkbox } from '@renderer/components/ui/checkbox'
 import { Button } from '@renderer/components/ui/button'
 import {
@@ -68,7 +68,6 @@ import {
   FieldGroup,
   FieldLabel
 } from '@renderer/components/ui/field'
-import { Input } from '@renderer/components/ui/input'
 import {
   Select,
   SelectContent,
@@ -123,6 +122,7 @@ export type SettingsSection =
   | 'privacy'
   | 'rules'
   | 'sync'
+  | 'sync-range'
   | 'translation'
   | 'backup'
   | 'about'
@@ -143,7 +143,6 @@ const AUTO_SAVE_DELAY_MS = 350
 
 type SettingsFormValues = {
   syncIntervalMinutes: number
-  syncWindowDays: number
   openAtLogin: boolean
   defaultDesktopNotificationsEnabled: boolean
   locale: 'zh-CN' | 'en-US'
@@ -171,6 +170,7 @@ const sections: Array<{
     labelKey: 'settings.sync',
     icon: Clock3
   },
+  { value: 'sync-range', labelKey: 'settings.syncRange', icon: CalendarRange },
   { value: 'notifications', labelKey: 'settings.notifications', icon: Bell },
   {
     value: 'signatures',
@@ -266,7 +266,6 @@ export function SettingsDialog({
         try {
           await onSubmit({
             syncIntervalMinutes: currentValues.syncIntervalMinutes,
-            syncWindowDays: currentValues.syncWindowDays,
             openAtLogin: currentValues.openAtLogin,
             defaultDesktopNotificationsEnabled: currentValues.defaultDesktopNotificationsEnabled,
             locale: currentValues.locale,
@@ -570,6 +569,12 @@ export function SettingsDialog({
                   onSubmit={onSubmit}
                   onUpdateAccount={onUpdateAccount}
                 />
+              ) : section === 'sync-range' ? (
+                settings ? (
+                  <SyncRangeSettings settings={settings} onSubmit={onSubmit} />
+                ) : (
+                  <p>{t('common.loading')}</p>
+                )
               ) : section === 'notifications' ? (
                 <NotificationSettings accounts={accounts} onRefreshAccounts={onRefreshAccounts} />
               ) : section === 'privacy' ? (
@@ -697,27 +702,6 @@ function GeneralSettingsForm({
             />
           )}
         />
-
-        <SettingRow
-          icon={CalendarRange}
-          title={t('settings.syncWindow.title')}
-          description={t('settings.syncWindow.description')}
-          control={
-            <Input
-              id="sync-window-days"
-              className="w-28"
-              type="number"
-              min={0}
-              max={3650}
-              aria-invalid={Boolean(form.formState.errors.syncWindowDays)}
-              {...form.register('syncWindowDays', { valueAsNumber: true })}
-            />
-          }
-          error={form.formState.errors.syncWindowDays?.message}
-          invalid={Boolean(form.formState.errors.syncWindowDays)}
-        />
-
-        <CacheCleanupControl />
 
         <Controller
           control={form.control}
@@ -1305,11 +1289,6 @@ function createSettingsSchema(t: (key: TranslationKey) => string) {
       .int(t('settings.syncInterval.errorInteger'))
       .min(0, t('settings.syncInterval.errorMin'))
       .max(1440, t('settings.syncInterval.errorMax')),
-    syncWindowDays: z.coerce
-      .number<number>(t('settings.syncWindow.errorRequired'))
-      .int(t('settings.syncWindow.errorInteger'))
-      .min(0, t('settings.syncWindow.errorMin'))
-      .max(3650, t('settings.syncWindow.errorMax')),
     openAtLogin: z.boolean(),
     defaultDesktopNotificationsEnabled: z.boolean(),
     locale: z.enum(['zh-CN', 'en-US']),
@@ -1321,7 +1300,6 @@ function createSettingsSchema(t: (key: TranslationKey) => string) {
 function toFormValues(settings: AppSettings | null): SettingsFormValues {
   return {
     syncIntervalMinutes: settings?.syncIntervalMinutes ?? 15,
-    syncWindowDays: settings?.syncWindowDays ?? 90,
     openAtLogin: settings?.openAtLogin === true,
     defaultDesktopNotificationsEnabled: settings?.defaultDesktopNotificationsEnabled !== false,
     locale: settings?.locale === 'en-US' ? 'en-US' : 'zh-CN',
@@ -1333,7 +1311,6 @@ function toFormValues(settings: AppSettings | null): SettingsFormValues {
 function areSettingsEqual(first: SettingsFormValues, second: SettingsFormValues): boolean {
   return (
     first.syncIntervalMinutes === second.syncIntervalMinutes &&
-    first.syncWindowDays === second.syncWindowDays &&
     first.openAtLogin === second.openAtLogin &&
     first.defaultDesktopNotificationsEnabled === second.defaultDesktopNotificationsEnabled &&
     first.locale === second.locale &&

@@ -54,6 +54,7 @@ export type Attachment = {
   size: string
   type: string
   disposition?: string
+  cached?: boolean
 }
 
 export type MessageFolderRole =

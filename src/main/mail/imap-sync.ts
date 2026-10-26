@@ -11,6 +11,11 @@ import { connectMailSocket } from '../services/network-proxy'
 import { formatImapIdCommand } from './imap-client-id'
 import { REMOTE_MESSAGE_MISSING_NOTICE } from './remote-message-error'
 import { broadcastWritebackChanged } from '../services/remote-writeback.service'
+import { getSettings } from '../db/repositories/settings.repository'
+import { syncCutoff } from '../../shared/sync-range'
+import { fillMissingMessageBodies } from './sync-body-cache'
+import { persistHeaderAddresses } from './message-headers'
+import { withAccountCacheAccess } from '../services/cache-activity'
 
 type TestSocket = Socket | TLSSocket
 
@@ -33,6 +38,7 @@ type SyncStats = {
   scannedCount: number
   insertedCount: number
   updatedCount: number
+  newMailCount: number
 }
 
 export type AccountMailboxSyncMode = 'initial' | 'refresh'
@@ -68,10 +74,15 @@ type SyncCursor = {
 
 const CONNECTION_TIMEOUT_MS = 15000
 const HEADER_FETCH_BATCH_SIZE = 100
-const REFRESH_BOOTSTRAP_UID_COUNT = 200
-const RECENT_FLAG_REFRESH_LIMIT = 100
 
-export async function syncAccountMailbox(
+export function syncAccountMailbox(
+  accountId: number,
+  mode: AccountMailboxSyncMode = 'refresh'
+): Promise<SyncStats> {
+  return withAccountCacheAccess(accountId, () => syncAccountMailboxCore(accountId, mode))
+}
+
+async function syncAccountMailboxCore(
   accountId: number,
   mode: AccountMailboxSyncMode = 'refresh'
 ): Promise<SyncStats> {
@@ -89,11 +100,10 @@ export async function syncAccountMailbox(
       if (capabilities) updateAccountIdleSupport(account.accountId, capabilities.has('IDLE'))
     }
     const mailboxes = await listSyncMailboxes(account.accountId, client)
-    const totals = { scannedCount: 0, insertedCount: 0, updatedCount: 0 }
+    const totals = { scannedCount: 0, insertedCount: 0, updatedCount: 0, newMailCount: 0 }
 
     for (const mailbox of mailboxes) {
       const mailboxStatus = await client.statusMailbox(mailbox.path).catch(() => null)
-      if (mailboxStatus) persistMailboxStatus(account.accountId, mailbox, mailboxStatus)
 
       const stats =
         mode === 'initial'
@@ -102,8 +112,10 @@ export async function syncAccountMailbox(
       totals.scannedCount += stats.scannedCount
       totals.insertedCount += stats.insertedCount
       totals.updatedCount += stats.updatedCount
+      totals.newMailCount += stats.newMailCount
     }
 
+    await fillMissingMessageBodies(account.accountId)
     markAccountSynced(account.accountId)
     return totals
   } finally {
@@ -111,14 +123,18 @@ export async function syncAccountMailbox(
   }
 }
 
-export async function syncAccountNewInboxMessages(accountId: number): Promise<SyncStats> {
+export function syncAccountNewInboxMessages(accountId: number): Promise<SyncStats> {
+  return withAccountCacheAccess(accountId, () => syncAccountNewInboxMessagesCore(accountId))
+}
+
+async function syncAccountNewInboxMessagesCore(accountId: number): Promise<SyncStats> {
   const account = getAccount(accountId)
   if (!account) {
     throw new Error(`Account not found: ${accountId}`)
   }
 
   const client = await ImapSession.connect(account)
-  let totals: SyncStats = { scannedCount: 0, insertedCount: 0, updatedCount: 0 }
+  let totals: SyncStats = { scannedCount: 0, insertedCount: 0, updatedCount: 0, newMailCount: 0 }
 
   try {
     await authenticateImapSession(account, client)
@@ -127,6 +143,7 @@ export async function syncAccountNewInboxMessages(accountId: number): Promise<Sy
     await client.logout().catch(() => undefined)
   }
 
+  await fillMissingMessageBodies(account.accountId)
   markAccountSynced(account.accountId)
   return totals
 }
@@ -188,8 +205,9 @@ class ImapSession {
     await this.selectMailbox('INBOX')
   }
 
-  async selectMailbox(path: string): Promise<void> {
-    await this.command(`SELECT ${quoteAtom(path)}`)
+  async selectMailbox(path: string): Promise<string | undefined> {
+    const response = await this.command(`SELECT ${quoteAtom(path)}`)
+    return response.match(/\[UIDVALIDITY\s+(\d+)\]/i)?.[1]
   }
 
   async statusInbox(): Promise<MailboxStatus> {
@@ -213,6 +231,26 @@ class ImapSession {
     return parseSearchUids(response)
   }
 
+  async searchSince(cutoff: string): Promise<number[]> {
+    const date = new Date(cutoff)
+    const month = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec'
+    ][date.getUTCMonth()]
+    const day = `${date.getUTCDate()}-${month}-${date.getUTCFullYear()}`
+    return parseSearchUids(await this.command(`UID SEARCH OR SINCE ${day} SENTSINCE ${day}`))
+  }
+
   async searchUidRange(firstUid: number, lastUid?: number): Promise<number[]> {
     const uidSet = lastUid === undefined ? `${firstUid}:*` : `${firstUid}:${lastUid}`
     const response = await this.command(`UID SEARCH UID ${uidSet}`)
@@ -232,7 +270,7 @@ class ImapSession {
 
     const uidSet = uids.join(',')
     const response = await this.command(
-      `UID FETCH ${uidSet} (UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER.FIELDS (MESSAGE-ID FROM SUBJECT DATE)])`
+      `UID FETCH ${uidSet} (UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER.FIELDS (MESSAGE-ID FROM TO CC REPLY-TO SUBJECT DATE REFERENCES IN-REPLY-TO)])`
     )
 
     return parseFetchResponse(response)
@@ -323,16 +361,26 @@ async function syncMailboxFull(
   mailbox: SyncMailbox,
   mailboxStatus?: MailboxStatus | null
 ): Promise<SyncStats> {
-  await client.selectMailbox(mailbox.path)
+  const selectedValidity = await client.selectMailbox(mailbox.path)
+  mailboxStatus = validateMailboxIdentity(
+    account.accountId,
+    mailbox,
+    mailboxStatus,
+    selectedValidity
+  )
+  persistMailboxStatus(account.accountId, mailbox, mailboxStatus)
   const cursor = getMailboxSyncCursor(account.accountId, mailbox)
   const uids = await client.searchAll()
-  const existingUids = getExistingUids(account.accountId, cursor.folderId, uids)
-  const newUids = uids.filter((uid) => !existingUids.has(uid))
-  const headers = await fetchHeadersInBatches(client, newUids)
+  const cutoff = syncCutoff(getSettings().syncWindowDays)
+  const scopedUids = await client.searchSince(cutoff)
+  const existingUids = getExistingUids(account.accountId, cursor.folderId, scopedUids)
+  const newUids = scopedUids.filter((uid) => !existingUids.has(uid))
+  const fetchedHeaders = await fetchHeadersInBatches(client, newUids)
+  const headers = fetchedHeaders.filter((item) => headerInRange(item, cutoff))
   const knownUids = getKnownMessageUids(account.accountId, cursor.folderId)
   const flags = await fetchFlagsInBatches(client, knownUids)
 
-  if (newUids.length > 0 && headers.length === 0) {
+  if (newUids.length > 0 && fetchedHeaders.length === 0) {
     throw new Error(`${mailbox.name} 已找到邮件，但邮件头解析失败，未写入本地列表。`)
   }
 
@@ -346,31 +394,24 @@ async function syncMailboxRefresh(
   mailboxStatus?: MailboxStatus | null
 ): Promise<SyncStats> {
   const cursor = getMailboxSyncCursor(account.accountId, mailbox)
-  if (
-    cursor.hasState &&
-    cursor.uidValidity &&
-    mailboxStatus?.uidValidity &&
-    cursor.uidValidity !== mailboxStatus.uidValidity
-  ) {
-    return syncMailboxFull(account, client, mailbox, mailboxStatus)
-  }
-
-  const firstUid = getRefreshFirstUid(cursor, mailboxStatus)
-
-  await client.selectMailbox(mailbox.path)
-
-  const candidateUids = await getRefreshCandidateUids(client, firstUid, mailboxStatus)
+  const selectedValidity = await client.selectMailbox(mailbox.path)
+  mailboxStatus = validateMailboxIdentity(
+    account.accountId,
+    mailbox,
+    mailboxStatus,
+    selectedValidity
+  )
+  persistMailboxStatus(account.accountId, mailbox, mailboxStatus)
+  const cutoff = syncCutoff(getSettings().syncWindowDays)
+  const candidateUids = await client.searchSince(cutoff)
   const existingUids = getExistingUids(account.accountId, cursor.folderId, candidateUids)
   const newUids = candidateUids.filter((uid) => !existingUids.has(uid))
-  const headers = await fetchHeadersInBatches(client, newUids)
-  const recentUids = getRecentKnownMessageUids(
-    account.accountId,
-    cursor.folderId,
-    RECENT_FLAG_REFRESH_LIMIT
-  )
+  const fetchedHeaders = await fetchHeadersInBatches(client, newUids)
+  const headers = fetchedHeaders.filter((item) => headerInRange(item, cutoff))
+  const recentUids = candidateUids.filter((uid) => existingUids.has(uid))
   const flags = await fetchFlagsInBatches(client, recentUids)
 
-  if (newUids.length > 0 && headers.length === 0) {
+  if (newUids.length > 0 && fetchedHeaders.length === 0) {
     throw new Error(`${mailbox.name} 已找到新邮件，但邮件头解析失败，未写入本地列表。`)
   }
 
@@ -385,38 +426,38 @@ async function syncMailboxRefresh(
   )
 }
 
-function getRefreshFirstUid(cursor: SyncCursor, mailboxStatus?: MailboxStatus | null): number {
-  if (cursor.hasState && cursor.lastUid > 0) {
-    return cursor.lastUid + 1
-  }
-
-  const lastRemoteUid = getLastRemoteUid(mailboxStatus)
-  if (lastRemoteUid !== undefined) {
-    return Math.max(1, lastRemoteUid - REFRESH_BOOTSTRAP_UID_COUNT + 1)
-  }
-
-  return 1
+function headerInRange(header: FetchedHeader, cutoff: string): boolean {
+  const date = parseHeader(header.header).receivedAt ?? header.internalDate
+  if (!date) throw new Error('邮件缺少有效日期，无法确定同步范围。')
+  return Date.parse(date) >= Date.parse(cutoff)
 }
 
-async function getRefreshCandidateUids(
-  client: ImapSession,
-  firstUid: number,
-  mailboxStatus?: MailboxStatus | null
-): Promise<number[]> {
-  const lastRemoteUid = getLastRemoteUid(mailboxStatus)
-  if (lastRemoteUid !== undefined && lastRemoteUid < firstUid) return []
-
-  if (lastRemoteUid !== undefined) {
-    return client.searchUidRange(firstUid, lastRemoteUid)
+function validateMailboxIdentity(
+  accountId: number,
+  mailbox: SyncMailbox,
+  status: MailboxStatus | null | undefined,
+  selectedValidity?: string
+): MailboxStatus {
+  const stored = getDatabase()
+    .prepare<{ folder_validity: string | null; cursor_validity: string | null }>(
+      `SELECT f.uid_validity AS folder_validity, s.uid_validity AS cursor_validity
+     FROM onemail_mail_folders f LEFT JOIN onemail_folder_sync_states s ON s.folder_id = f.folder_id
+     WHERE f.account_id = :accountId AND f.path = :path`
+    )
+    .get({ accountId, path: mailbox.path })
+  const remoteValidity = selectedValidity ?? status?.uidValidity
+  if (
+    !remoteValidity ||
+    (selectedValidity && status?.uidValidity && selectedValidity !== status.uidValidity) ||
+    [stored?.folder_validity, stored?.cursor_validity].some(
+      (value) => value && value !== remoteValidity
+    )
+  ) {
+    throw new Error(
+      `${mailbox.name} 的 UIDVALIDITY 已变化或无法确认，已停止同步并保留原缓存，避免将新 UID 关联到旧邮件。`
+    )
   }
-
-  const uids = await client.searchUidRange(firstUid)
-  return firstUid === 1 ? uids.slice(-REFRESH_BOOTSTRAP_UID_COUNT) : uids
-}
-
-function getLastRemoteUid(mailboxStatus?: MailboxStatus | null): number | undefined {
-  const value = mailboxStatus?.uidNext === undefined ? undefined : mailboxStatus.uidNext - 1
-  return value !== undefined && Number.isInteger(value) && value > 0 ? value : undefined
+  return { ...status, uidValidity: remoteValidity }
 }
 
 async function syncNewInboxMessages(
@@ -426,8 +467,6 @@ async function syncNewInboxMessages(
 ): Promise<SyncStats> {
   const mailboxStatus = await client.statusMailbox(inbox.path).catch(() => null)
   if (!mailboxStatus) return syncMailboxRefresh(account, client, inbox, null)
-
-  persistMailboxStatus(account.accountId, inbox, mailboxStatus)
 
   return syncMailboxRefresh(account, client, inbox, mailboxStatus)
 }
@@ -556,11 +595,14 @@ function persistFetchedHeaders(
   scannedUids: number[],
   isFullScan: boolean,
   mailboxStatus?: MailboxStatus | null
-): { scannedCount: number; insertedCount: number; updatedCount: number } {
+): SyncStats {
   const db = getDatabase()
   const folderId = ensureSyncFolder(account.accountId, mailbox)
   let insertedCount = 0
   let updatedCount = 0
+  let newMailCount = 0
+  const settings = getSettings()
+  const cursor = getMailboxSyncCursor(account.accountId, mailbox)
   let cancelledWritebacks = 0
 
   const insertMessage = db.prepare(
@@ -581,7 +623,10 @@ function persistFetchedHeaders(
       is_starred,
       is_answered,
       flags_json,
-      body_status
+      body_status,
+      raw_headers,
+      download_attachments_separately,
+      sync_backfill
     )
     VALUES (
       :accountId,
@@ -599,10 +644,14 @@ function persistFetchedHeaders(
       :isStarred,
       :isAnswered,
       :flagsJson,
-      'none'
+      'none',
+      :rawHeaders,
+      :downloadAttachmentsSeparately,
+      :syncBackfill
     )
     ON CONFLICT(account_id, folder_id, uid) DO UPDATE SET
       rfc822_message_id = excluded.rfc822_message_id,
+      raw_headers = excluded.raw_headers,
       subject = excluded.subject,
       from_name = excluded.from_name,
       from_email = excluded.from_email,
@@ -683,6 +732,12 @@ function persistFetchedHeaders(
         )
         .get({ accountId: account.accountId, folderId, uid: item.uid })?.message_id
       const parsed = parseHeader(item.header)
+      const isBackfill =
+        isFullScan ||
+        !cursor.hasState ||
+        item.uid <= cursor.lastUid ||
+        !account.lastSyncAt ||
+        Date.parse(parsed.receivedAt ?? item.internalDate ?? '') < Date.parse(account.lastSyncAt)
       const flags = parseFlags(item.flags)
       const params: SqliteParams = {
         accountId: account.accountId,
@@ -699,7 +754,10 @@ function persistFetchedHeaders(
         isRead: hasFlag(flags, 'Seen') ? 1 : 0,
         isStarred: hasFlag(flags, 'Flagged') ? 1 : 0,
         isAnswered: hasFlag(flags, 'Answered') ? 1 : 0,
-        flagsJson: JSON.stringify(Array.from(flags))
+        flagsJson: JSON.stringify(Array.from(flags)),
+        rawHeaders: item.header,
+        downloadAttachmentsSeparately: settings.downloadAttachmentsSeparately ? 1 : 0,
+        syncBackfill: isBackfill ? 1 : 0
       }
 
       insertMessage.run(params)
@@ -716,16 +774,29 @@ function persistFetchedHeaders(
           .get({ accountId: account.accountId, folderId, uid: item.uid })?.message_id
 
       if (messageId !== undefined) {
-        deleteSearch.run({ messageId })
-        ensureSearch.run({
-          messageId,
-          accountId: account.accountId,
-          folderId,
-          subject: parsed.subject ?? '',
-          fromName: parsed.fromName ?? '',
-          fromEmail: parsed.fromEmail ?? '',
-          snippet: parsed.subject ?? ''
-        })
+        persistHeaderAddresses(messageId, item.header)
+        if (existing) {
+          db.prepare(
+            `UPDATE onemail_message_search SET subject = :subject,
+            from_name = :fromName, from_email = :fromEmail WHERE message_id = :messageId`
+          ).run({
+            messageId,
+            subject: parsed.subject ?? '',
+            fromName: parsed.fromName ?? '',
+            fromEmail: parsed.fromEmail ?? ''
+          })
+        } else {
+          deleteSearch.run({ messageId })
+          ensureSearch.run({
+            messageId,
+            accountId: account.accountId,
+            folderId,
+            subject: parsed.subject ?? '',
+            fromName: parsed.fromName ?? '',
+            fromEmail: parsed.fromEmail ?? '',
+            snippet: parsed.subject ?? ''
+          })
+        }
       }
 
       restoreMessage.run({ accountId: account.accountId, folderId, uid: item.uid })
@@ -734,6 +805,7 @@ function persistFetchedHeaders(
         updatedCount += 1
       } else {
         insertedCount += 1
+        if (!isBackfill && mailbox.role === 'inbox') newMailCount += 1
       }
     }
 
@@ -763,7 +835,7 @@ function persistFetchedHeaders(
   }
   if (cancelledWritebacks > 0) broadcastWritebackChanged()
 
-  return { scannedCount: scannedUids.length, insertedCount, updatedCount }
+  return { scannedCount: scannedUids.length, insertedCount, updatedCount, newMailCount }
 }
 
 function persistMailboxStatus(
@@ -828,6 +900,7 @@ function getExistingUids(accountId: number, folderId: number, uids: number[]): S
         FROM onemail_mail_messages
         WHERE account_id = :accountId
           AND folder_id = :folderId
+          AND raw_headers IS NOT NULL
           AND uid IN (${uidValues})
         `
       )
@@ -855,25 +928,6 @@ function getKnownMessageUids(accountId: number, folderId: number): number[] {
       `
     )
     .all({ accountId, folderId })
-
-  return rows.map((row) => Number(row.uid)).filter((uid) => Number.isInteger(uid) && uid > 0)
-}
-
-function getRecentKnownMessageUids(accountId: number, folderId: number, limit: number): number[] {
-  const rows = getDatabase()
-    .prepare<KnownMessageUidRow>(
-      `
-      SELECT uid
-      FROM onemail_mail_messages
-      WHERE account_id = :accountId
-        AND folder_id = :folderId
-        AND remote_deleted = 0
-        AND remote_missing = 0
-      ORDER BY uid DESC
-      LIMIT :limit
-      `
-    )
-    .all({ accountId, folderId, limit })
 
   return rows.map((row) => Number(row.uid)).filter((uid) => Number.isInteger(uid) && uid > 0)
 }

@@ -293,8 +293,10 @@ export async function deleteMailSignature(signatureId: number): Promise<boolean>
   return window.api.settings.deleteSignature(signatureId)
 }
 
-export async function cleanupMailCache(days: number): Promise<CacheCleanupResult> {
-  return window.api.settings.cleanupCache(days)
+export async function cleanupMailCache(
+  input: Pick<AppSettings, 'cacheRetentionDays' | 'cleanupMetadata'>
+): Promise<CacheCleanupResult> {
+  return window.api.settings.cleanupCache(input)
 }
 
 export async function exportSqlBackup(options?: BackupExportOptions): Promise<string | null> {
@@ -477,6 +479,10 @@ export async function markAllMessagesRead(
   query: MessageListQuery
 ): Promise<MessageBulkReadStateResult> {
   return window.api.messages.markAllRead({ query })
+}
+
+export async function recordMessageAccess(messageId: number): Promise<void> {
+  return window.api.messages.access(messageId)
 }
 
 export async function downloadAttachment(attachmentId: number): Promise<AttachmentDownloadResult> {
@@ -738,13 +744,14 @@ function toMessage(message: MailMessageSummary | MailMessageDetail): Message {
     attachments:
       'attachments' in message
         ? message.attachments
-            .filter((attachment) => attachment.filename.trim() && attachment.sizeBytes > 0)
+            .filter((attachment) => attachment.filename.trim())
             .map((attachment) => ({
               id: attachment.attachmentId,
               name: normalizeMailDisplayText(attachment.filename) ?? attachment.filename,
               size: formatBytes(attachment.sizeBytes),
               type: attachment.mimeType ?? '',
-              disposition: attachment.contentDisposition
+              disposition: attachment.contentDisposition,
+              cached: attachment.cached
             }))
         : message.hasAttachments
           ? [{ name: '', size: ATTACHMENT_METADATA_PENDING_SIZE, type: '' }]

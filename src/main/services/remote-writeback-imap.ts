@@ -9,12 +9,13 @@ export async function selectAndVerifyRemoteMessage(
   client: SimpleImapSession,
   identity: RemoteMessageIdentity
 ): Promise<void> {
-  await fetchVerifiedRemoteMessage(client, identity)
+  await fetchVerifiedRemoteMessage(client, identity, true)
 }
 
 export async function fetchVerifiedRemoteMessage(
   client: SimpleImapSession,
-  identity: RemoteMessageIdentity
+  identity: RemoteMessageIdentity,
+  headersOnly = false
 ): Promise<string> {
   const selected: unknown = await client.selectMailbox(identity.folderPath)
   const remoteUidValidity =
@@ -31,7 +32,9 @@ export async function fetchVerifiedRemoteMessage(
   if (!hasVerifiedUidValidity && !messageId) {
     throw new Error('缺少可验证的远端邮件身份，已停止写回；请先同步邮件。')
   }
-  const raw = await client.fetchRawMessage(identity.uid)
+  const raw = headersOnly
+    ? await client.fetchMessageHeaders(identity.uid)
+    : await client.fetchRawMessage(identity.uid)
   if (!raw) throw new RemoteMessageMissingError()
   if (messageId) {
     const headers = raw.split(/\r?\n\r?\n/, 1)[0].replace(/\r?\n[ \t]+/g, ' ')

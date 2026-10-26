@@ -27,6 +27,7 @@ const api = {
     get: (domain) => ipcRenderer.invoke('logos/get', domain)
   },
   messages: {
+    access: (messageId) => ipcRenderer.invoke('messages/access', messageId),
     list: (query) => ipcRenderer.invoke('messages/list', query),
     stats: () => ipcRenderer.invoke('messages/stats'),
     get: (messageId) => ipcRenderer.invoke('messages/get', messageId),
@@ -123,7 +124,7 @@ const api = {
     update: (input) => ipcRenderer.invoke('settings/update', input),
     saveSignature: (input) => ipcRenderer.invoke('settings/saveSignature', input),
     deleteSignature: (signatureId) => ipcRenderer.invoke('settings/deleteSignature', signatureId),
-    cleanupCache: (days) => ipcRenderer.invoke('settings/cleanupCache', days),
+    cleanupCache: (input) => ipcRenderer.invoke('settings/cleanupCache', input),
     getBackupSync: () => ipcRenderer.invoke('settings/getBackupSync'),
     updateBackupSync: (input) => ipcRenderer.invoke('settings/updateBackupSync', input),
     testBackupSync: (input) => ipcRenderer.invoke('settings/testBackupSync', input),

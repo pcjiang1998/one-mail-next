@@ -60,6 +60,7 @@ describe('messages whose original remote UID is missing', () => {
   let session: {
     selectMailbox: ReturnType<typeof vi.fn>
     fetchRawMessage: ReturnType<typeof vi.fn>
+    fetchMessageHeaders: ReturnType<typeof vi.fn>
     setSeenFlag: ReturnType<typeof vi.fn>
     logout: ReturnType<typeof vi.fn>
   }
@@ -93,9 +94,11 @@ describe('messages whose original remote UID is missing', () => {
     session = {
       selectMailbox: vi.fn().mockResolvedValue({ uidValidity: '77' }),
       fetchRawMessage: vi.fn().mockResolvedValue(''),
+      fetchMessageHeaders: vi.fn().mockResolvedValue(''),
       setSeenFlag: vi.fn().mockResolvedValue(undefined),
       logout: vi.fn().mockResolvedValue(undefined)
     }
+    session.fetchMessageHeaders = session.fetchRawMessage
     vi.mocked(SimpleImapSession.connect)
       .mockReset()
       .mockResolvedValue(session as unknown as SimpleImapSession)
@@ -325,6 +328,7 @@ describe('messages whose original remote UID is missing', () => {
       messageId
     })
     const presentId = insertMessage(1)
+    persistRawMessageBody(presentId, rawMessage)
     db.prepare('UPDATE onemail_mail_messages SET is_read = 1 WHERE message_id = :messageId').run({
       messageId: presentId
     })
@@ -342,7 +346,7 @@ describe('messages whose original remote UID is missing', () => {
         let response = ''
         if (data.includes('CAPABILITY')) response = '* CAPABILITY IMAP4rev1\r\n'
         if (data.includes('STATUS')) {
-          response = `* STATUS "INBOX" (MESSAGES 1 UNSEEN 0 UIDNEXT ${uidNext} UIDVALIDITY 88)\r\n`
+          response = `* STATUS "INBOX" (MESSAGES 1 UNSEEN 0 UIDNEXT ${uidNext} UIDVALIDITY 77)\r\n`
         }
         if (data.includes('UID SEARCH ALL')) response = '* SEARCH 1\r\n'
         else if (data.includes('UID SEARCH')) response = '* SEARCH\r\n'
@@ -371,7 +375,11 @@ describe('messages whose original remote UID is missing', () => {
     uidNext = 3
     const fullScanCommandCount = commands.length
     await syncAccountMailbox(accountId, 'refresh')
-    expect(commands.some((command) => command.includes('UID SEARCH UID 2:2'))).toBe(true)
+    expect(
+      commands
+        .slice(fullScanCommandCount)
+        .some((command) => command.includes('UID SEARCH OR SINCE'))
+    ).toBe(true)
     expect(
       commands
         .slice(fullScanCommandCount)

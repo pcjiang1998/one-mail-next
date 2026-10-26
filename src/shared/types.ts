@@ -184,6 +184,7 @@ export type MailMessageAttachment = {
   mimeType?: string
   contentDisposition?: 'attachment' | 'inline'
   sizeBytes: number
+  cached: boolean
 }
 
 export type AttachmentDownloadResult = {
@@ -480,6 +481,10 @@ export type AccountPrivacyMode = 'inherit' | PrivacyMode
 export type AppSettings = {
   syncIntervalMinutes: number
   syncWindowDays: number
+  syncBodyWindowDays: number
+  cacheRetentionDays: number
+  downloadAttachmentsSeparately: boolean
+  cleanupMetadata: boolean
   openAtLogin: boolean
   defaultDesktopNotificationsEnabled: boolean
   externalImagesBlocked: boolean
@@ -588,9 +593,13 @@ export type MailSignatureInput = {
   content: string
 }
 
+export type CacheCleanupInput = Pick<AppSettings, 'cacheRetentionDays' | 'cleanupMetadata'>
+
 export type CacheCleanupResult = {
   days: number
   deletedMessages: number
+  clearedBodies: number
+  clearedAttachments: number
 }
 
 export type BackupSyncProvider = 'none' | 'webdav' | 's3'
@@ -925,6 +934,7 @@ export type OneMailApi = {
     get: (domain: string) => Promise<string | null>
   }
   messages: {
+    access: (messageId: number) => Promise<void>
     list: (query?: MessageListQuery) => Promise<MailMessageSummary[]>
     stats: () => Promise<AccountMailboxStats[]>
     get: (messageId: number) => Promise<MailMessageDetail | null>
@@ -979,7 +989,7 @@ export type OneMailApi = {
     update: (input: SettingsUpdateInput) => Promise<AppSettings>
     saveSignature: (input: MailSignatureInput) => Promise<MailSignature>
     deleteSignature: (signatureId: number) => Promise<boolean>
-    cleanupCache: (days: number) => Promise<CacheCleanupResult>
+    cleanupCache: (input: CacheCleanupInput) => Promise<CacheCleanupResult>
     getBackupSync: () => Promise<BackupSyncSettings>
     updateBackupSync: (input: BackupSyncSettings) => Promise<BackupSyncSettings>
     testBackupSync: (input: BackupSyncSettings) => Promise<BackupSyncTestResult>

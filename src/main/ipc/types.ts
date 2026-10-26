@@ -26,6 +26,7 @@ export type {
   BackupSyncTransferResult,
   BackupImportResult,
   CacheCleanupResult,
+  CacheCleanupInput,
   CredentialState,
   AuthType,
   ComposeDraft,

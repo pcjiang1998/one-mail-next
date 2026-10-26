@@ -21,6 +21,7 @@ import type {
   AccountSyncMode,
   AccountUpdateInput,
   AppSettings,
+  CacheCleanupInput,
   FallbackSyncMode,
   GlobalSyncMode,
   MailSignature,
@@ -30,33 +31,51 @@ import type {
 } from '../../../../shared/types'
 import { isValidCustomProxyUrl } from '../../../../shared/proxy-url'
 
-const CACHE_CLEANUP_DAYS = [7, 15, 30, 60, 90, 180, 360] as const
 const PROXY_MODES: ProxyMode[] = ['none', 'system', 'custom']
 const ACCOUNT_PROXY_MODES: AccountProxyMode[] = ['global', 'none', 'system', 'custom']
 
 type SubmitSettings = (input: SettingsUpdateInput) => Promise<void>
 type UpdateAccount = (input: AccountUpdateInput) => Promise<void>
 
-export function CacheCleanupControl(): React.JSX.Element {
+export function CacheCleanupControl({
+  disabled,
+  settings,
+  onPendingChange
+}: {
+  disabled: boolean
+  settings: CacheCleanupInput
+  onPendingChange: (pending: boolean) => void
+}): React.JSX.Element {
   const { t } = useI18n()
-  const [days, setDays] = React.useState('30')
   const [pending, setPending] = React.useState(false)
+  const cleaning = React.useRef(false)
   const [message, setMessage] = React.useState<string | null>(null)
   const [error, setError] = React.useState<string | null>(null)
 
   async function handleCleanup(): Promise<void> {
+    if (disabled || cleaning.current) return
+    cleaning.current = true
     setPending(true)
+    onPendingChange(true)
     setMessage(null)
     setError(null)
     try {
-      const result = await cleanupMailCache(Number(days))
-      setMessage(t('settings.cache.cleanupResult', { count: result.deletedMessages }))
+      const result = await cleanupMailCache(settings)
+      setMessage(
+        t('settings.cache.cleanupResult', {
+          count: result.deletedMessages,
+          bodies: result.clearedBodies,
+          attachments: result.clearedAttachments
+        })
+      )
     } catch (cleanupError) {
       setError(
         cleanupError instanceof Error ? cleanupError.message : t('settings.cache.cleanupError')
       )
     } finally {
+      cleaning.current = false
       setPending(false)
+      onPendingChange(false)
     }
   }
 
@@ -69,20 +88,17 @@ export function CacheCleanupControl(): React.JSX.Element {
         </p>
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <Select value={days} onValueChange={setDays} disabled={pending}>
-          <SelectTrigger className="w-44" aria-label={t('settings.cache.cleanupSelect')}>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {CACHE_CLEANUP_DAYS.map((value) => (
-              <SelectItem key={value} value={String(value)}>
-                {t('settings.cache.cleanupDays', { days: value })}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Button size="sm" variant="outline" disabled={pending} onClick={() => void handleCleanup()}>
-          {pending ? <LoaderCircle data-icon="inline-start" className="animate-spin" /> : null}
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={pending || disabled}
+          onClick={() => void handleCleanup()}
+        >
+          {pending ? (
+            <LoaderCircle data-icon="inline-start" className="animate-spin" />
+          ) : (
+            <Trash2 data-icon="inline-start" />
+          )}
           {pending ? t('settings.cache.cleaning') : t('settings.cache.cleanup')}
         </Button>
       </div>

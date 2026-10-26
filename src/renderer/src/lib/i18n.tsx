@@ -76,6 +76,30 @@ const zhCN = {
     '添加邮箱时默认勾选“是否需要桌面通知”。修改此项不会更改已有邮箱的通知设置。',
   'account.form.desktopNotifications': '是否需要桌面通知',
   'settings.sync': '邮件同步',
+  'settings.syncRange': '邮件同步范围',
+  'settings.syncRange.syncWindowDays': '邮件元信息范围（天）',
+  'settings.syncRange.syncWindowDays.description':
+    '自动获取最近 X 天邮件的发件人、收件人、主题、时间、大小和标记，最多 90 天。',
+  'settings.syncRange.syncBodyWindowDays': '邮件全文拉取范围（天）',
+  'settings.syncRange.syncBodyWindowDays.description':
+    '自动下载最近 X 天的正文用于本地阅读和搜索，最多 30 天。范围过大会增加网络和磁盘开销。',
+  'settings.syncRange.cacheRetentionDays': '本地缓存保留天数',
+  'settings.syncRange.cacheRetentionDays.description':
+    '0 表示不自动清理，并禁用手动清理。启动及每 24 小时检查，按邮件日期和最近用户访问时间的较新值计算。最新打开的旧邮件不会立刻清理，看板关联邮件始终保留。',
+  'settings.syncRange.attachments': '附件单独下载',
+  'settings.syncRange.attachments.description':
+    '默认：否，随正文一起下载。此全局选项仅影响之后首次获取元信息的邮件，不能逐封或逐账号设置。手动打开全文范围外的邮件也遵循首次同步时的策略；开启后可能需要点击“保存”附件才能阅读和修改。已有正文和附件不受开关切换影响，后台不会为补齐附件重新下载正文。',
+  'settings.syncRange.pop3':
+    'POP3 等不支持附件独立获取的协议可能仍会随正文下载附件。已取得的附件会保留，按正常缓存规则清理。',
+  'settings.syncRange.cleanupMetadata': '清理时同时清理元信息（手动和自动清理均适用）',
+  'settings.syncRange.error.integer': '请输入整数：邮件范围必须大于 0，本地缓存保留天数可以为 0。',
+  'settings.syncRange.error.metadataMax': '邮件元信息范围不能超过 90 天。',
+  'settings.syncRange.error.bodyMax': '邮件全文范围不能超过 30 天。',
+  'settings.syncRange.error.metadataOrder': '邮件元信息范围必须大于邮件全文范围。',
+  'settings.syncRange.error.bodyOrder': '邮件全文范围必须小于邮件元信息范围。',
+  'settings.syncRange.error.retentionOrder': '本地缓存保留天数必须大于邮件元信息范围，或设为 0。',
+  'settings.syncRange.error.metadataRetentionOrder': '邮件元信息范围必须小于本地缓存保留天数。',
+  'mail.attachment.saveCached': '保存（已缓存）',
   'settings.translation': '翻译',
   'settings.backup': '导入导出',
   'settings.about': '关于',
@@ -130,12 +154,14 @@ const zhCN = {
   'settings.syncWindow.errorMin': '缓存天数不能小于 0',
   'settings.syncWindow.errorMax': '缓存天数不能超过 3650 天',
   'settings.cache.cleanupTitle': '清理邮件缓存',
-  'settings.cache.cleanupDescription': '删除所选天数以前的本地邮件缓存，不会删除服务器上的邮件。',
+  'settings.cache.cleanupDescription':
+    '仅清理超过保留天数且未关联看板的本地缓存，默认保留元信息。仍被草稿或未完成操作引用的邮件暂不清理。不会删除或移动服务器邮件，也不会删除已另存的附件。',
   'settings.cache.cleanupSelect': '选择清理范围',
   'settings.cache.cleanupDays': '{days} 天前',
   'settings.cache.cleaning': '正在清理...',
   'settings.cache.cleanup': '清理',
-  'settings.cache.cleanupResult': '已删除 {count} 封本地缓存邮件。',
+  'settings.cache.cleanupResult':
+    '已清理 {bodies} 封正文、{attachments} 个附件缓存，删除 {count} 封邮件的元信息。',
   'settings.cache.cleanupError': '缓存清理失败。',
   'settings.signature.globalTitle': '全局签名',
   'settings.signature.globalDescription': '新邮件默认使用此签名。',
@@ -797,7 +823,7 @@ const zhCN = {
   'status.accounts': '{count} 个账号',
   'status.messages': '{count} 封邮件',
   'status.unread': '{count} 封未读邮件',
-  'status.cacheDays': '{days} 天缓存',
+  'status.cacheDays': '元信息 {days} 天',
   'status.openRepository': '打开关于与更新',
   'status.openHomepageForUpdateGeneric': '发现新版本，点击打开 OneMail 官网。',
   'status.openHomepageForUpdate': '发现新版本 v{version}，点击打开 OneMail 官网。',
@@ -880,6 +906,34 @@ const enUS: TranslationMap = {
     'Select desktop notifications by default when adding an account. Existing accounts keep their own notification setting.',
   'account.form.desktopNotifications': 'Use desktop notifications',
   'settings.sync': 'Mail sync',
+  'settings.syncRange': 'Mail sync ranges',
+  'settings.syncRange.syncWindowDays': 'Metadata range (days)',
+  'settings.syncRange.syncWindowDays.description':
+    'Fetch sender, recipients, subject, date, size and flags for the most recent X days, up to 90 days.',
+  'settings.syncRange.syncBodyWindowDays': 'Full message range (days)',
+  'settings.syncRange.syncBodyWindowDays.description':
+    'Download recent message content for local reading and search, up to 30 days. Large ranges use more bandwidth and disk space.',
+  'settings.syncRange.cacheRetentionDays': 'Local cache retention (days)',
+  'settings.syncRange.cacheRetentionDays.description':
+    '0 disables automatic and manual cleanup. Check at startup and every 24 hours, using the later of the message date and last user access. Recently opened old messages and board-linked messages are protected.',
+  'settings.syncRange.attachments': 'Download attachments separately',
+  'settings.syncRange.attachments.description':
+    'Default: off, download with the body. This global setting applies only to messages whose metadata is first fetched after the change, with no per-account or per-message override. Manually opening older messages uses their original policy; use Save to read or edit uncached attachments. Existing bodies and attachments are unchanged, and background sync never downloads a cached body again to fill attachments.',
+  'settings.syncRange.pop3':
+    'Protocols such as POP3 may still download attachments with the body. Already retrieved attachments are retained and follow normal cache cleanup rules.',
+  'settings.syncRange.cleanupMetadata': 'Also clear metadata (manual and automatic cleanup)',
+  'settings.syncRange.error.integer':
+    'Enter an integer. Mail ranges must be positive; cache retention may be 0.',
+  'settings.syncRange.error.metadataMax': 'Metadata range must not exceed 90 days.',
+  'settings.syncRange.error.bodyMax': 'Full message range must not exceed 30 days.',
+  'settings.syncRange.error.metadataOrder':
+    'Metadata range must be greater than full message range.',
+  'settings.syncRange.error.bodyOrder': 'Full message range must be less than metadata range.',
+  'settings.syncRange.error.retentionOrder':
+    'Cache retention must be greater than metadata range, or 0.',
+  'settings.syncRange.error.metadataRetentionOrder':
+    'Metadata range must be less than cache retention.',
+  'mail.attachment.saveCached': 'Save (cached)',
   'settings.translation': 'Translation',
   'settings.backup': 'Import / Export',
   'settings.about': 'About',
@@ -941,12 +995,13 @@ const enUS: TranslationMap = {
   'settings.syncWindow.errorMax': 'Cache window cannot exceed 3650 days',
   'settings.cache.cleanupTitle': 'Clean mail cache',
   'settings.cache.cleanupDescription':
-    'Delete locally cached messages older than the selected age. Messages on the server are not deleted.',
+    'Clear only expired local caches without board links; metadata is retained by default. Mail referenced by unsent drafts or unfinished operations is retained. Server messages and separately saved attachment files are never deleted or moved.',
   'settings.cache.cleanupSelect': 'Select cleanup range',
   'settings.cache.cleanupDays': 'Older than {days} days',
   'settings.cache.cleaning': 'Cleaning...',
   'settings.cache.cleanup': 'Clean',
-  'settings.cache.cleanupResult': 'Deleted {count} locally cached messages.',
+  'settings.cache.cleanupResult':
+    'Cleared {bodies} bodies and {attachments} cached attachments; removed metadata for {count} messages.',
   'settings.cache.cleanupError': 'Cache cleanup failed.',
   'settings.signature.globalTitle': 'Global signature',
   'settings.signature.globalDescription': 'Use this signature by default for new messages.',
@@ -1661,7 +1716,7 @@ const enUS: TranslationMap = {
   'status.accounts': '{count} accounts',
   'status.messages': '{count} messages',
   'status.unread': '{count} unread messages',
-  'status.cacheDays': '{days} days cached',
+  'status.cacheDays': 'Metadata: {days} days',
   'status.openRepository': 'Open About and Updates',
   'status.openHomepageForUpdateGeneric':
     'New version available. Click to open the OneMail website.',

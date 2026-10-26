@@ -92,6 +92,31 @@ describe('database SQL backup', () => {
     )
   })
 
+  it('migrates a legacy backup with an unlimited sync window without deleting cached mail', () => {
+    configureDatabase('legacy-source', createTestDatabaseKey(-30, '7777777777777777'))
+    const account = seedAccount('legacy@example.com', 'secret')
+    seedInboxMessage(account.accountId, 'Legacy mail')
+    getSettings()
+    getDatabase().exec(`
+      DELETE FROM onemail_app_settings WHERE setting_key IN
+        ('mail_sync_ranges_version', 'sync_body_window_days', 'cache_retention_days', 'download_attachments_separately', 'cleanup_metadata');
+      UPDATE onemail_app_settings SET setting_value = '0' WHERE setting_key = 'sync_window_days';
+      INSERT INTO onemail_message_bodies (message_id, body_text) VALUES (1, 'Keep this cached body');
+    `)
+    const backup = createDatabaseSqlBackup()
+    closeDatabase()
+    configureDatabase('legacy-target', createTestDatabaseKey(-20, '8888888888888888'))
+    importDatabaseSqlBackupContent(backup.sql, backup.fileName)
+    expect(getSettings()).toMatchObject({
+      syncWindowDays: 90,
+      syncBodyWindowDays: 7,
+      cacheRetentionDays: 0
+    })
+    expect(getDatabase().prepare('SELECT body_text FROM onemail_message_bodies').get()).toEqual({
+      body_text: 'Keep this cached body'
+    })
+  })
+
   it.each([true, false])(
     'restores all settings and contacts with includeMail=%s',
     (includeMail) => {
@@ -119,6 +144,10 @@ describe('database SQL backup', () => {
         globalSyncIntervalMinutes: 20,
         fallbackSyncMode: 'manual',
         syncWindowDays: 60,
+        syncBodyWindowDays: 20,
+        cacheRetentionDays: 120,
+        downloadAttachmentsSeparately: true,
+        cleanupMetadata: true,
         theme: 'dark'
       })
       const translation = getTranslationSettingsForMain()
@@ -150,7 +179,7 @@ describe('database SQL backup', () => {
       INSERT INTO onemail_message_bodies (message_id, body_text) VALUES (1, 'Private body');
       INSERT INTO onemail_message_addresses (message_id, kind, email, normalized_email)
         VALUES (1, 'from', 'sender@example.com', 'sender@example.com');
-      INSERT INTO onemail_message_attachments (message_id, filename) VALUES (1, 'file.txt');
+      INSERT INTO onemail_message_attachments (message_id, filename, cached_content) VALUES (1, 'file.txt', X'00616263ff');
       INSERT INTO onemail_message_search (message_id, subject, body_text) VALUES (1, 'Mail content to omit', 'Private body');
       INSERT INTO onemail_pop3_messages (account_id, uidl, message_id) VALUES (${account.accountId}, 'uidl1', 1);
       INSERT INTO onemail_tasks (account_id, message_id, subject_snapshot) VALUES (${account.accountId}, 1, 'Mail content to omit');
@@ -197,6 +226,13 @@ describe('database SQL backup', () => {
         readKey: 'backup-key'
       })
       const restored = getDatabase()
+      if (includeMail) {
+        expect(
+          restored
+            .prepare(`SELECT hex(cached_content) AS content FROM onemail_message_attachments`)
+            .get()
+        ).toEqual({ content: '00616263FF' })
+      }
       expect(restored.prepare('PRAGMA foreign_key_check').all()).toEqual([])
       expect(restored.prepare('SELECT * FROM onemail_contacts').get()).toMatchObject({
         display_name: 'Alice',
