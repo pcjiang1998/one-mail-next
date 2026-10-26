@@ -1,4 +1,5 @@
 import type { SqliteDatabaseSync, SqliteRow } from './connection'
+import { REMOTE_MESSAGE_MISSING_NOTICE } from '../mail/remote-message-error'
 
 type TableColumnRow = SqliteRow & {
   name: string
@@ -99,6 +100,14 @@ const TABLE_COLUMN_UPGRADES: Record<string, ColumnDefinition[]> = {
   onemail_message_bodies: [{ name: 'raw_source', definition: 'raw_source TEXT' }],
   onemail_mail_messages: [
     {
+      name: 'read_state_revision',
+      definition: 'read_state_revision INTEGER NOT NULL DEFAULT 0 CHECK (read_state_revision >= 0)'
+    },
+    {
+      name: 'remote_missing',
+      definition: 'remote_missing INTEGER NOT NULL DEFAULT 0 CHECK (remote_missing IN (0, 1))'
+    },
+    {
       name: 'user_deleted',
       definition: 'user_deleted INTEGER NOT NULL DEFAULT 0 CHECK (user_deleted IN (0, 1))'
     },
@@ -113,6 +122,9 @@ const TABLE_COLUMN_UPGRADES: Record<string, ColumnDefinition[]> = {
 }
 
 export function upgradeSchema(db: SqliteDatabaseSync): void {
+  const needsRemoteMissingUpgrade = !getTableColumns(db, 'onemail_mail_messages').has(
+    'remote_missing'
+  )
   db.exec(`
     CREATE TABLE IF NOT EXISTS onemail_mail_signatures (
       signature_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -135,6 +147,35 @@ export function upgradeSchema(db: SqliteDatabaseSync): void {
   `)
   for (const [tableName, columns] of Object.entries(TABLE_COLUMN_UPGRADES)) {
     addMissingColumns(db, tableName, columns)
+  }
+  if (needsRemoteMissingUpgrade) {
+    // Older full scans hid missing UIDs using remote_deleted, without a user deletion.
+    db.exec(`
+      UPDATE onemail_mail_messages
+      SET remote_missing = 1, remote_deleted = 0
+      WHERE remote_deleted = 1 AND is_deleted = 0 AND user_deleted = 0;
+      UPDATE onemail_mail_folders
+      SET total_count = total_count + (
+            SELECT COUNT(*) FROM onemail_mail_messages m
+            WHERE m.folder_id = onemail_mail_folders.folder_id
+              AND m.remote_missing = 1 AND m.user_hidden = 0
+          ),
+          unread_count = unread_count + (
+            SELECT COUNT(*) FROM onemail_mail_messages m
+            WHERE m.folder_id = onemail_mail_folders.folder_id
+              AND m.remote_missing = 1 AND m.user_hidden = 0 AND m.is_read = 0
+          );
+    `)
+    db.prepare(
+      `UPDATE onemail_remote_writebacks
+       SET status = 'cancelled', error_message = :notice,
+           finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+       WHERE status IN ('queued', 'running', 'failed')
+         AND operation_kind IN ('mark_read', 'mark_unread', 'mark_answered')
+         AND message_id IN (
+           SELECT message_id FROM onemail_mail_messages WHERE remote_missing = 1
+         )`
+    ).run({ notice: REMOTE_MESSAGE_MISSING_NOTICE })
   }
   ensureFeatureColumns(db)
   ensureRemoteWritebackOperationKinds(db)

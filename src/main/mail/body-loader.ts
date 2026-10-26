@@ -4,12 +4,25 @@ import type { MailMessageBody } from '../ipc/types'
 import { normalizeMailBodyText, normalizeMailDisplayText } from '../../shared/mail-text'
 import { SimpleImapSession } from './imap-session'
 import { authenticateImapSession } from './imap-auth'
+import {
+  getMessageRawSource,
+  loadMessageBody,
+  markMessageRemoteMissing
+} from '../db/repositories/message.repository'
+import { getRemoteMessageIdentity } from '../db/repositories/remote-writeback.repository'
+import { fetchVerifiedRemoteMessage } from '../services/remote-writeback-imap'
+import { broadcastWritebackChanged } from '../services/remote-writeback.service'
+import {
+  RemoteMessageMissingError,
+  REMOTE_MESSAGE_MISSING_BODY_ERROR
+} from './remote-message-error'
 
 type MessageLocator = {
   message_id: number
   account_id: number
   folder_path: string
   uid: number
+  remote_missing: number
 }
 
 type ParsedMimePart = {
@@ -33,8 +46,14 @@ export type ParsedMessageAttachment = ParsedMessageBody['attachments'][number] &
 }
 
 export async function loadMessageBodyFromImap(messageId: number): Promise<MailMessageBody | null> {
+  const cachedBody = loadMessageBody(messageId)
+  if (cachedBody) return cachedBody
+  const rawSource = getMessageRawSource(messageId)
+  if (rawSource) return persistRawMessageBody(messageId, rawSource)
+
   const locator = getMessageLocator(messageId)
   if (!locator) return null
+  if (locator.remote_missing) throw new Error(REMOTE_MESSAGE_MISSING_BODY_ERROR)
 
   const account = getAccount(locator.account_id)
   if (!account) {
@@ -52,16 +71,27 @@ export async function loadMessageBodyFromImap(messageId: number): Promise<MailMe
     `
   ).run({ messageId })
 
-  const client = await SimpleImapSession.connect(account, 'B')
-
+  let client: SimpleImapSession | undefined
   try {
+    client = await SimpleImapSession.connect(account, 'B')
     await authenticateImapSession(account, client)
-    await client.selectMailbox(locator.folder_path)
-    const rawMessage = await client.fetchRawMessage(locator.uid)
+    const identity = getRemoteMessageIdentity(messageId)
+    if (!identity) {
+      if (getMessageLocator(messageId)?.remote_missing) {
+        throw new RemoteMessageMissingError()
+      }
+      throw new Error('邮件远端定位信息已失效，请先同步邮件。')
+    }
+    const rawMessage = await fetchVerifiedRemoteMessage(client, identity)
     const parsed = parseMimeMessage(rawMessage)
     const body = persistMessageBody(messageId, parsed, rawMessage)
     return body
   } catch (error) {
+    const missing = error instanceof RemoteMessageMissingError
+    if (missing) {
+      markMessageRemoteMissing(messageId)
+      broadcastWritebackChanged()
+    }
     db.prepare(
       `
       UPDATE onemail_mail_messages
@@ -72,11 +102,16 @@ export async function loadMessageBodyFromImap(messageId: number): Promise<MailMe
       `
     ).run({
       messageId,
-      message: error instanceof Error ? error.message : '加载正文失败。'
+      message: missing
+        ? REMOTE_MESSAGE_MISSING_BODY_ERROR
+        : error instanceof Error
+          ? error.message
+          : '加载正文失败。'
     })
+    if (missing) throw new Error(REMOTE_MESSAGE_MISSING_BODY_ERROR)
     throw error
   } finally {
-    await client.logout().catch(() => undefined)
+    await client?.logout().catch(() => undefined)
   }
 }
 
@@ -88,7 +123,8 @@ function getMessageLocator(messageId: number): MessageLocator | null {
         m.message_id,
         m.account_id,
         f.path AS folder_path,
-        m.uid
+        m.uid,
+        m.remote_missing
       FROM onemail_mail_messages m
       JOIN onemail_mail_folders f ON f.folder_id = m.folder_id
       WHERE m.message_id = :messageId

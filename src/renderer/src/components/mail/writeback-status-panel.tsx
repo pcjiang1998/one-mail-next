@@ -54,7 +54,7 @@ export function WritebackStatusPanel({
                 className="h-6 px-2 text-[11px]"
                 onClick={onClearCompleted}
               >
-                清除成功/失败
+                清除已结束记录
               </Button>
               <Button
                 variant="ghost"
@@ -122,7 +122,7 @@ function WritebackRow({
         : item.status === 'failed'
           ? '失败'
           : item.status === 'cancelled'
-            ? '已取消'
+            ? '已停止写回'
             : '成功'
   const canRetry = ['mark_read', 'mark_unread', 'mark_answered'].includes(item.operationKind)
   return (
@@ -143,7 +143,7 @@ function WritebackRow({
           />
           <span className="truncate font-medium">{title}</span>
         </div>
-        <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
+        <div className="mt-0.5 break-words text-[11px] text-muted-foreground">
           账号：{item.accountEmail ?? `账号 ${item.accountId}`} · 操作：{operation} · 状态：{state}
           {item.errorMessage ? ` · 原因：${item.errorMessage}` : ''}
           {item.status === 'failed' && !canRetry

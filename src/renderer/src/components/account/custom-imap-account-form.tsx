@@ -59,6 +59,7 @@ export function CustomImapAccountForm({ form }: CustomImapAccountFormProps): Rea
         <Alert variant="warning">
           <AlertDescription className="text-xs">
             {t('account.form.popNoRealtimeWarning')}
+            <p className="mt-1">{t('account.form.popRetentionWarning')}</p>
           </AlertDescription>
         </Alert>
       ) : null}

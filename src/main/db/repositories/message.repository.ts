@@ -10,6 +10,7 @@ import type {
   MessageListQuery
 } from '../../ipc/types'
 import { extractVerificationCode } from '../../../shared/verification-code'
+import { REMOTE_MESSAGE_MISSING_NOTICE } from '../../mail/remote-message-error'
 
 type MessageRow = SqliteRow & {
   message_id: number
@@ -29,6 +30,8 @@ type MessageRow = SqliteRow & {
   is_answered?: number
   has_attachments: number
   body_status: MailMessageSummary['bodyStatus']
+  body_error?: string | null
+  remote_missing?: number
   body_text?: string | null
   body_html_sanitized?: string | null
   external_images_blocked?: number
@@ -71,6 +74,7 @@ export type MessageComposeSource = {
   folderPath: string
   folderRole: string
   uid: number
+  remoteMissing: boolean
   subject?: string
   fromName?: string
   fromEmail?: string
@@ -104,6 +108,8 @@ export type MessageReadStateTarget = {
   folderPath: string
   uid: number
   isRead: boolean
+  readStateRevision: number
+  remoteMissing: boolean
 }
 
 export type MessageDeleteTarget = {
@@ -115,6 +121,7 @@ export type MessageDeleteTarget = {
   uid: number
   rfc822MessageId?: string
   remoteDeleted: boolean
+  remoteMissing: boolean
   userHidden: boolean
   userDeleted: boolean
 }
@@ -148,6 +155,8 @@ export function listMessages(query?: MessageListQuery): MailMessageSummary[] {
         m.is_answered,
         m.has_attachments,
         m.body_status,
+        m.body_error,
+        m.remote_missing,
         b.body_text,
         b.body_html_sanitized
       FROM onemail_mail_messages m
@@ -352,6 +361,8 @@ export function listRecentNotificationMessages(
         m.is_answered,
         m.has_attachments,
         m.body_status,
+        m.body_error,
+        m.remote_missing,
         b.body_text,
         b.body_html_sanitized
       FROM onemail_mail_messages m
@@ -406,6 +417,8 @@ export function getMessage(messageId: number): MailMessageDetail | null {
         m.is_answered,
         m.has_attachments,
         m.body_status,
+        m.body_error,
+        m.remote_missing,
         b.body_text,
         b.body_html_sanitized,
         b.external_images_blocked
@@ -466,6 +479,8 @@ export function getMessageReadStateTarget(messageId: number): MessageReadStateTa
         folder_path: string
         uid: number
         is_read: number
+        read_state_revision: number
+        remote_missing: number
       }
     >(
       `
@@ -475,7 +490,9 @@ export function getMessageReadStateTarget(messageId: number): MessageReadStateTa
         m.folder_id,
         f.path AS folder_path,
         m.uid,
-        m.is_read
+        m.is_read,
+        m.read_state_revision,
+        m.remote_missing
       FROM onemail_mail_messages m
       JOIN onemail_mail_folders f ON f.folder_id = m.folder_id
       WHERE m.message_id = :messageId
@@ -492,7 +509,9 @@ export function getMessageReadStateTarget(messageId: number): MessageReadStateTa
     folderId: toNumber(row.folder_id),
     folderPath: row.folder_path,
     uid: toNumber(row.uid),
-    isRead: toBoolean(row.is_read)
+    isRead: toBoolean(row.is_read),
+    readStateRevision: toNumber(row.read_state_revision),
+    remoteMissing: toBoolean(row.remote_missing)
   }
 }
 
@@ -508,6 +527,7 @@ export function getMessageComposeSource(messageId: number): MessageComposeSource
         f.path AS folder_path,
         f.role AS folder_role,
         m.uid,
+        m.remote_missing,
         m.rfc822_message_id,
         m.in_reply_to,
         m.references_header,
@@ -542,6 +562,7 @@ export function getMessageComposeSource(messageId: number): MessageComposeSource
     folderPath: row.folder_path,
     folderRole: row.folder_role,
     uid: toNumber(row.uid),
+    remoteMissing: toBoolean(row.remote_missing),
     subject: toOptionalString(row.subject),
     fromName: toOptionalString(row.from_name),
     fromEmail: toOptionalString(row.from_email),
@@ -601,6 +622,7 @@ export function getMessageDeleteTarget(messageId: number): MessageDeleteTarget |
         uid: number
         rfc822_message_id: string | null
         remote_deleted: number
+        remote_missing: number
         user_hidden: number
         user_deleted: number
       }
@@ -615,6 +637,7 @@ export function getMessageDeleteTarget(messageId: number): MessageDeleteTarget |
         m.uid,
         m.rfc822_message_id,
         m.remote_deleted,
+        m.remote_missing,
         m.user_hidden,
         m.user_deleted
       FROM onemail_mail_messages m
@@ -635,6 +658,7 @@ export function getMessageDeleteTarget(messageId: number): MessageDeleteTarget |
     uid: toNumber(row.uid),
     rfc822MessageId: toOptionalString(row.rfc822_message_id),
     remoteDeleted: toBoolean(row.remote_deleted),
+    remoteMissing: toBoolean(row.remote_missing),
     userHidden: toBoolean(row.user_hidden),
     userDeleted: toBoolean(row.user_deleted)
   }
@@ -653,6 +677,7 @@ export function updateMessageReadState(messageId: number, isRead: boolean): Mess
       `
       UPDATE onemail_mail_messages
       SET is_read = :isRead,
+          read_state_revision = read_state_revision + 1,
           flags_json = :flagsJson,
           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE message_id = :messageId
@@ -674,8 +699,27 @@ export function updateMessageReadState(messageId: number, isRead: boolean): Mess
     messageId,
     accountId: target.accountId,
     folderId: target.folderId,
-    isRead
+    isRead,
+    remoteMissing: target.remoteMissing
   }
+}
+
+export function markMessageRemoteMissing(messageId: number): void {
+  const db = getDatabase()
+  db.prepare(
+    `UPDATE onemail_mail_messages
+     SET remote_missing = 1,
+         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     WHERE message_id = :messageId`
+  ).run({ messageId })
+  db.prepare(
+    `UPDATE onemail_remote_writebacks
+     SET status = 'cancelled', error_message = :notice,
+         finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     WHERE message_id = :messageId
+       AND status IN ('queued', 'failed')
+       AND operation_kind IN ('mark_read', 'mark_unread', 'mark_answered')`
+  ).run({ messageId, notice: REMOTE_MESSAGE_MISSING_NOTICE })
 }
 
 export function markMessageUserDeleted(messageId: number): void {
@@ -785,6 +829,8 @@ function mapMessageSummaryRow(row: MessageRow): MailMessageSummary {
     folderId: toNumber(row.folder_id),
     folderRole: toOptionalString(row.folder_role),
     folderName: toOptionalString(row.folder_name),
+    remoteMissing: toBoolean(row.remote_missing),
+    bodyError: toOptionalString(row.body_error),
     subject: toOptionalString(row.subject),
     fromName: toOptionalString(row.from_name),
     fromEmail: toOptionalString(row.from_email),

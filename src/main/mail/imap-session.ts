@@ -81,8 +81,9 @@ export class SimpleImapSession {
     await this.selectMailbox('INBOX')
   }
 
-  async selectMailbox(path: string): Promise<void> {
-    await this.command(`SELECT ${quoteAtom(path)}`)
+  async selectMailbox(path: string): Promise<{ uidValidity?: string }> {
+    const response = await this.command(`SELECT ${quoteAtom(path)}`)
+    return { uidValidity: response.match(/\[UIDVALIDITY\s+(\d+)\]/i)?.[1] }
   }
 
   async listMailboxes(): Promise<ImapMailbox[]> {

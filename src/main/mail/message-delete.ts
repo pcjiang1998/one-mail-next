@@ -54,7 +54,7 @@ export async function permanentlyDeleteMessage(messageId: number): Promise<Messa
   const account = getAccount(target.accountId)
   if (!account) throw new Error(`Account not found: ${target.accountId}`)
 
-  if (account.receiveProtocol === 'pop3') {
+  if (account.receiveProtocol === 'pop3' || target.remoteMissing) {
     markMessageRemoteDeleted(messageId)
     return {
       messageId,
@@ -164,7 +164,7 @@ export function hideMessageLocally(messageId: number): MessageDeleteResult {
 export async function restoreMessage(messageId: number): Promise<MessageDeleteResult> {
   const target = requireRestoreTarget(messageId)
 
-  if (target.userHidden && !target.userDeleted) {
+  if (target.remoteMissing || (target.userHidden && !target.userDeleted)) {
     restoreMessageLocally(messageId)
     return {
       messageId,
@@ -308,6 +308,7 @@ function assertTargetIdentity(target: MessageDeleteTarget, identity: RemoteMessa
 /** Rule actions may call this explicitly; ordinary user delete keeps its existing local-hide semantics. */
 export async function moveMessageToTrash(messageId: number): Promise<MessageDeleteResult> {
   const target = requireDeleteTarget(messageId)
+  if (target.remoteMissing) return hideMessageLocally(messageId)
   const trash = findFolderByRole(target.accountId, 'trash')
   if (!trash) throw new Error('未找到该账号的已删除邮件文件夹。')
   const account = getAccount(target.accountId)

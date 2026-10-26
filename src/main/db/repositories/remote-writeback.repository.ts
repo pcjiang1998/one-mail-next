@@ -120,7 +120,7 @@ export function getRemoteMessageIdentity(messageId: number): RemoteMessageIdenti
               f.path AS folder_path, f.uid_validity
        FROM onemail_mail_messages m
        JOIN onemail_mail_folders f ON f.folder_id = m.folder_id
-       WHERE m.message_id = :messageId AND m.remote_deleted = 0`
+       WHERE m.message_id = :messageId AND m.remote_deleted = 0 AND m.remote_missing = 0`
     )
     .get({ messageId })
   return row
@@ -220,7 +220,7 @@ export function dismissRemoteWriteback(writebackId: number): boolean {
       `UPDATE onemail_remote_writebacks
        SET dismissed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
        WHERE writeback_id = :writebackId
-         AND status IN ('success', 'failed')`
+         AND status IN ('success', 'failed', 'cancelled')`
     )
     .run({ writebackId })
   return result.changes > 0
@@ -231,7 +231,7 @@ export function dismissCompletedWritebacks(): number {
     .prepare(
       `UPDATE onemail_remote_writebacks
        SET dismissed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-       WHERE status IN ('success', 'failed')
+       WHERE status IN ('success', 'failed', 'cancelled')
          AND dismissed_at IS NULL`
     )
     .run()

@@ -167,6 +167,8 @@ export type MailMessageSummary = {
   isAnswered: boolean
   hasAttachments: boolean
   bodyStatus: 'none' | 'loading' | 'ready' | 'error'
+  bodyError?: string
+  remoteMissing?: boolean
   verificationCode?: string
 }
 
@@ -200,6 +202,7 @@ export type MailMessageBody = {
 export type MailMessageBodyLoadResult = {
   body: MailMessageBody | null
   error?: string
+  remoteMissing?: boolean
 }
 
 export type MailMessageDetail = MailMessageSummary & {
@@ -387,6 +390,7 @@ export type MessageReadStateUpdate = {
   accountId: number
   folderId: number
   isRead: boolean
+  remoteMissing?: boolean
 }
 
 export type MessageBulkReadStateFailure = {

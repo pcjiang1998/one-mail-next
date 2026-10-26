@@ -9,6 +9,8 @@ import { parseImapMailboxList, type ImapMailbox } from './imap-mailboxes'
 import { getSelectedFolderPathKeys, isRequiredFolderRole } from '../services/account-mailboxes'
 import { connectMailSocket } from '../services/network-proxy'
 import { formatImapIdCommand } from './imap-client-id'
+import { REMOTE_MESSAGE_MISSING_NOTICE } from './remote-message-error'
+import { broadcastWritebackChanged } from '../services/remote-writeback.service'
 
 type TestSocket = Socket | TLSSocket
 
@@ -559,6 +561,7 @@ function persistFetchedHeaders(
   const folderId = ensureSyncFolder(account.accountId, mailbox)
   let insertedCount = 0
   let updatedCount = 0
+  let cancelledWritebacks = 0
 
   const insertMessage = db.prepare(
     `
@@ -647,8 +650,10 @@ function persistFetchedHeaders(
     `
     UPDATE onemail_mail_messages
     SET remote_deleted = 0,
+        remote_missing = 0,
         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-    WHERE account_id = :accountId AND folder_id = :folderId AND uid = :uid AND remote_deleted = 1
+    WHERE account_id = :accountId AND folder_id = :folderId AND uid = :uid
+      AND (remote_deleted = 1 OR remote_missing = 1)
     `
   )
   const updateFlags = db.prepare(
@@ -659,6 +664,7 @@ function persistFetchedHeaders(
         is_answered = :isAnswered,
         flags_json = :flagsJson,
         remote_deleted = 0,
+        remote_missing = 0,
         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     WHERE account_id = :accountId AND folder_id = :folderId AND uid = :uid
     `
@@ -746,7 +752,7 @@ function persistFetchedHeaders(
     }
 
     if (isFullScan) {
-      markMissingMessagesDeleted(account.accountId, folderId, scannedUids)
+      cancelledWritebacks = markMissingMessagesDeleted(account.accountId, folderId, scannedUids)
     }
     refreshMailboxSyncState(account.accountId, folderId, mailboxStatus, isFullScan)
 
@@ -755,6 +761,7 @@ function persistFetchedHeaders(
     db.exec('ROLLBACK')
     throw error
   }
+  if (cancelledWritebacks > 0) broadcastWritebackChanged()
 
   return { scannedCount: scannedUids.length, insertedCount, updatedCount }
 }
@@ -843,6 +850,7 @@ function getKnownMessageUids(accountId: number, folderId: number): number[] {
       WHERE account_id = :accountId
         AND folder_id = :folderId
         AND remote_deleted = 0
+        AND remote_missing = 0
       ORDER BY uid ASC
       `
     )
@@ -860,6 +868,7 @@ function getRecentKnownMessageUids(accountId: number, folderId: number, limit: n
       WHERE account_id = :accountId
         AND folder_id = :folderId
         AND remote_deleted = 0
+        AND remote_missing = 0
       ORDER BY uid DESC
       LIMIT :limit
       `
@@ -883,25 +892,11 @@ function markMissingMessagesDeleted(
   accountId: number,
   folderId: number,
   existingUids: number[]
-): void {
+): number {
   const db = getDatabase()
 
   db.exec('CREATE TEMP TABLE IF NOT EXISTS current_imap_uids (uid INTEGER PRIMARY KEY)')
   db.exec('DELETE FROM current_imap_uids')
-
-  if (existingUids.length === 0) {
-    db.prepare(
-      `
-      UPDATE onemail_mail_messages
-      SET remote_deleted = 1,
-          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-      WHERE account_id = :accountId
-        AND folder_id = :folderId
-        AND remote_deleted = 0
-      `
-    ).run({ accountId, folderId })
-    return
-  }
 
   const insertUid = db.prepare('INSERT OR IGNORE INTO current_imap_uids (uid) VALUES (:uid)')
   for (const uid of existingUids) {
@@ -911,7 +906,7 @@ function markMissingMessagesDeleted(
   db.prepare(
     `
     UPDATE onemail_mail_messages
-    SET remote_deleted = 1,
+    SET remote_missing = 1,
         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     WHERE account_id = :accountId
       AND folder_id = :folderId
@@ -923,6 +918,20 @@ function markMissingMessagesDeleted(
       )
     `
   ).run({ accountId, folderId })
+  const cancelled = db
+    .prepare(
+      `UPDATE onemail_remote_writebacks
+     SET status = 'cancelled', error_message = :notice,
+         finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     WHERE status IN ('queued', 'failed')
+       AND operation_kind IN ('mark_read', 'mark_unread', 'mark_answered')
+       AND message_id IN (
+         SELECT message_id FROM onemail_mail_messages
+         WHERE account_id = :accountId AND folder_id = :folderId AND remote_missing = 1
+       )`
+    )
+    .run({ accountId, folderId, notice: REMOTE_MESSAGE_MISSING_NOTICE })
+  return cancelled.changes
 }
 
 function refreshMailboxSyncState(
@@ -936,6 +945,8 @@ function refreshMailboxSyncState(
     .prepare<{
       total_count: number
       unread_count: number
+      missing_count: number
+      missing_unread_count: number
       last_uid: number | null
       last_internal_date: string | null
     }>(
@@ -943,8 +954,10 @@ function refreshMailboxSyncState(
       SELECT
         COUNT(*) AS total_count,
         SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END) AS unread_count,
-        MAX(uid) AS last_uid,
-        MAX(internal_date) AS last_internal_date
+        SUM(CASE WHEN remote_missing = 1 AND user_hidden = 0 THEN 1 ELSE 0 END) AS missing_count,
+        SUM(CASE WHEN remote_missing = 1 AND user_hidden = 0 AND is_read = 0 THEN 1 ELSE 0 END) AS missing_unread_count,
+        MAX(CASE WHEN remote_missing = 0 THEN uid END) AS last_uid,
+        MAX(CASE WHEN remote_missing = 0 THEN internal_date END) AS last_internal_date
       FROM onemail_mail_messages
       WHERE account_id = :accountId
         AND folder_id = :folderId
@@ -953,8 +966,14 @@ function refreshMailboxSyncState(
     )
     .get({ accountId, folderId })
 
-  const totalCount = mailboxStatus?.totalCount ?? Number(stats?.total_count ?? 0)
-  const unreadCount = mailboxStatus?.unreadCount ?? Number(stats?.unread_count ?? 0)
+  const totalCount =
+    mailboxStatus?.totalCount === undefined
+      ? Number(stats?.total_count ?? 0)
+      : mailboxStatus.totalCount + Number(stats?.missing_count ?? 0)
+  const unreadCount =
+    mailboxStatus?.unreadCount === undefined
+      ? Number(stats?.unread_count ?? 0)
+      : mailboxStatus.unreadCount + Number(stats?.missing_unread_count ?? 0)
   const lastUid = Number(stats?.last_uid ?? 0)
 
   db.prepare(

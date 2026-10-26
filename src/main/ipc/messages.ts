@@ -27,7 +27,8 @@ export function registerMessageIpc(): void {
     } catch (error) {
       return {
         body: null,
-        error: error instanceof Error ? error.message : '加载邮件正文失败。'
+        error: error instanceof Error ? error.message : '加载邮件正文失败。',
+        remoteMissing: getMessage(messageId)?.remoteMissing
       }
     }
   })

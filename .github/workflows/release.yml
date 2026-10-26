@@ -25,6 +25,7 @@ jobs:
     timeout-minutes: 60
     env:
       TZ: Asia/Shanghai
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     strategy:
       fail-fast: false
       matrix:
@@ -39,6 +40,20 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+
+      - name: Validate release metadata
+        shell: pwsh
+        run: |
+          $package = Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json
+          if ($env:RELEASE_TAG -cne "v$($package.version)") {
+            throw "Release tag does not match package.json version."
+          }
+          $notesPath = "docs/releases/$($env:RELEASE_TAG).md"
+          if (-not (Test-Path -LiteralPath $notesPath -PathType Leaf)) {
+            throw "Release notes are missing: $notesPath"
+          }
 
       - name: Set timezone (Linux)
         if: runner.os == 'Linux'
@@ -86,8 +101,8 @@ jobs:
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-          body_path: RELEASE_NOTES.md
+          tag_name: ${{ env.RELEASE_TAG }}
+          body_path: docs/releases/${{ env.RELEASE_TAG }}.md
           fail_on_unmatched_files: false
           files: |
             dist/*.exe

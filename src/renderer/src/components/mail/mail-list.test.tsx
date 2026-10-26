@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import type { MouseEvent as ReactMouseEvent, ReactElement, ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -77,6 +77,48 @@ afterEach(() => {
 })
 
 describe('MailList range selection', () => {
+  it('keeps the selection toolbar below the scroll area as selections change', () => {
+    const props = {
+      account,
+      messages: [createMessage('1')],
+      selectedMessageId: '',
+      filters: [],
+      searchKeyword: '',
+      onSelectMessage: vi.fn(),
+      onChangeFilters: vi.fn(),
+      onChangeSearchKeyword: vi.fn(),
+      onLoadMore: vi.fn(),
+      onSelectAllVisible: vi.fn(),
+      onClearSelection: vi.fn(),
+      onMarkSelectedRead: vi.fn(),
+      onDeleteSelected: vi.fn()
+    }
+    const view = render(
+      <I18nProvider initialLocale="en-US">
+        <MailList {...props} />
+      </I18nProvider>
+    )
+    const toolbar = screen.getByRole('toolbar')
+    const scrollArea = toolbar.previousElementSibling
+    const row = screen.getByText('Subject 1').closest('[role="button"]')
+    expect(scrollArea).toContainElement(row as HTMLElement)
+    expect(toolbar).toHaveClass('h-12', 'shrink-0')
+    expect(within(toolbar).getByRole('button', { name: 'Mark read' })).toBeDisabled()
+    for (const selectedMessageIds of [new Set(['1']), new Set<string>()]) {
+      view.rerender(
+        <I18nProvider initialLocale="en-US">
+          <MailList {...props} selectedMessageIds={selectedMessageIds} />
+        </I18nProvider>
+      )
+      expect(screen.getByRole('toolbar')).toBe(toolbar)
+      expect(toolbar.previousElementSibling).toBe(scrollArea)
+      expect(screen.getByText('Subject 1').closest('[role="button"]')).toBe(row)
+      expect(
+        within(toolbar).getByRole('button', { name: 'Delete permanently' }).hasAttribute('disabled')
+      ).toBe(selectedMessageIds.size === 0)
+    }
+  })
+
   it('does not toggle the range endpoint again when the pointer is released', () => {
     vi.useFakeTimers()
     const onToggleMessageSelection = vi.fn()

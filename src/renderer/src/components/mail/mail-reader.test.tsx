@@ -40,6 +40,38 @@ function createMessage(overrides: Partial<Message> = {}): Message {
 }
 
 describe('MailReader metadata', () => {
+  it('continues displaying cached content for a local-only message', () => {
+    renderMailReader(
+      <MailReader
+        message={createMessage({ remoteMissing: true })}
+        recipientAddress="account@example.com"
+        onLoadBody={vi.fn()}
+      />
+    )
+    expect(screen.getByRole('status')).toHaveTextContent('仅本地保留')
+    expect(screen.getByText('正文内容')).toBeInTheDocument()
+  })
+
+  it('does not offer repeated body requests for an uncached missing message', () => {
+    const onLoadBody = vi.fn()
+    renderMailReader(
+      <MailReader
+        message={createMessage({
+          remoteMissing: true,
+          bodyLoaded: false,
+          bodyStatus: 'error',
+          body: []
+        })}
+        recipientAddress="account@example.com"
+        onLoadBody={onLoadBody}
+      />
+    )
+    fireEvent.click(screen.getByText('远端原位置已不存在，且本地未缓存正文，无法加载邮件内容。'))
+    expect(onLoadBody).not.toHaveBeenCalled()
+    expect(screen.queryByText('正文加载失败，点击重试')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '翻译' })).toBeDisabled()
+  })
+
   it('uses the message To header before falling back to the account address', () => {
     renderMailReader(
       <MailReader

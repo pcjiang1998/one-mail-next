@@ -136,6 +136,10 @@ export function MailComposer({
 
   async function handleSubmit(action: 'send' | 'draft'): Promise<void> {
     if (!draft) return
+    if (action === 'draft' && !hasDraftContent(form)) {
+      await closeEmptyDraft()
+      return
+    }
     if (action === 'send' && form.to.length === 0) {
       updateForm({ error: t('mail.composer.errorRecipientRequired') })
       return
@@ -227,7 +231,7 @@ export function MailComposer({
 
   async function handleSaveAndClose(): Promise<void> {
     if (!hasDraftContent(form)) {
-      handleClose()
+      await closeEmptyDraft()
       return
     }
 
@@ -235,6 +239,15 @@ export function MailComposer({
     if (!input) return
     await onSaveDraft(input)
     setExpanded(false)
+  }
+
+  async function closeEmptyDraft(): Promise<void> {
+    if (draft?.draftId && onDiscardDraft) {
+      await onDiscardDraft(draft.draftId)
+      setExpanded(false)
+    } else {
+      handleClose()
+    }
   }
 
   function handleDiscard(): void {
@@ -272,7 +285,7 @@ export function MailComposer({
         aria-modal="false"
         aria-labelledby="mail-composer-title"
         className={cn(
-          'app-no-drag fixed right-4 bottom-9 flex max-h-[calc(100vh-5rem)] w-[min(calc(100vw-2rem),38rem)] flex-col overflow-hidden rounded-t-lg border bg-background shadow-2xl',
+          'app-no-drag fixed right-4 bottom-9 z-20 flex max-h-[calc(100vh-5rem)] w-[min(calc(100vw-2rem),38rem)] flex-col overflow-hidden rounded-t-lg border bg-background shadow-2xl',
           expanded &&
             'top-10 bottom-10 w-[min(calc(100vw-2rem),56rem)] sm:right-8 sm:w-[min(calc(100vw-4rem),56rem)]'
         )}
@@ -1170,14 +1183,15 @@ function normalizeComposerHtml(value: string): string | undefined {
   return trimmed && trimmed !== '<p></p>' ? trimmed : undefined
 }
 
-function hasDraftContent(form: ComposerFormState): boolean {
+export function hasDraftContent(
+  form: Pick<ComposerFormState, 'subject' | 'bodyText' | 'bodyHtml' | 'attachments'>
+): boolean {
+  const document = new DOMParser().parseFromString(form.bodyHtml, 'text/html')
   return (
-    form.to.length > 0 ||
-    form.cc.length > 0 ||
-    form.bcc.length > 0 ||
     Boolean(form.subject.trim()) ||
     Boolean(form.bodyText.trim()) ||
-    Boolean(normalizeComposerHtml(form.bodyHtml)) ||
+    Boolean(document.body.textContent?.trim()) ||
+    Boolean(document.body.querySelector('img')) ||
     form.attachments.length > 0
   )
 }

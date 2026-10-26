@@ -31,7 +31,7 @@ function DrawerOverlay({
   return (
     <DialogPrimitive.Overlay
       data-slot="drawer-overlay"
-      className={cn('fixed inset-0 bg-background/80 backdrop-blur-sm', className)}
+      className={cn('fixed inset-0 z-40 bg-background/80 backdrop-blur-sm', className)}
       {...props}
     />
   )
@@ -51,7 +51,7 @@ function DrawerContent({
       <DialogPrimitive.Content
         data-slot="drawer-content"
         className={cn(
-          'fixed inset-x-0 bottom-0 grid max-h-[88vh] gap-4 rounded-t-lg border bg-background p-5 shadow-lg outline-none',
+          'fixed inset-x-0 bottom-0 z-50 grid max-h-[88vh] gap-4 rounded-t-lg border bg-background p-5 shadow-lg outline-none',
           className
         )}
         {...props}

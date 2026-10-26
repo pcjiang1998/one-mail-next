@@ -1,5 +1,6 @@
 import type { RemoteMessageIdentity } from '../db/repositories/remote-writeback.repository'
 import type { SimpleImapSession } from '../mail/imap-session'
+import { RemoteMessageMissingError } from '../mail/remote-message-error'
 
 // SELECT currently returns void on older sessions. When UIDVALIDITY is available,
 // check it; otherwise verify the exact Message-ID at the original UID, never merely
@@ -8,6 +9,13 @@ export async function selectAndVerifyRemoteMessage(
   client: SimpleImapSession,
   identity: RemoteMessageIdentity
 ): Promise<void> {
+  await fetchVerifiedRemoteMessage(client, identity)
+}
+
+export async function fetchVerifiedRemoteMessage(
+  client: SimpleImapSession,
+  identity: RemoteMessageIdentity
+): Promise<string> {
   const selected: unknown = await client.selectMailbox(identity.folderPath)
   const remoteUidValidity =
     selected && typeof selected === 'object' && 'uidValidity' in selected
@@ -24,7 +32,7 @@ export async function selectAndVerifyRemoteMessage(
     throw new Error('缺少可验证的远端邮件身份，已停止写回；请先同步邮件。')
   }
   const raw = await client.fetchRawMessage(identity.uid)
-  if (!raw) throw new Error('原 UID 对应的远端邮件已不存在，请先同步邮件。')
+  if (!raw) throw new RemoteMessageMissingError()
   if (messageId) {
     const headers = raw.split(/\r?\n\r?\n/, 1)[0].replace(/\r?\n[ \t]+/g, ' ')
     const identifiers = [...headers.matchAll(/^Message-ID:\s*(.*?)\s*$/gim)]
@@ -33,6 +41,7 @@ export async function selectAndVerifyRemoteMessage(
       throw new Error('远端 UID 对应的邮件身份已变化，已停止写回，避免操作其他邮件。')
     }
   }
+  return raw
 }
 
 export function requireUidExpunge(

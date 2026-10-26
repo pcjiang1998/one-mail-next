@@ -11,6 +11,11 @@ import type { AttachmentDownloadResult } from '../ipc/types'
 import { SimpleImapSession } from './imap-session'
 import { parseMimeAttachments, type ParsedMessageAttachment } from './body-loader'
 import { authenticateImapSession } from './imap-auth'
+import { getRemoteMessageIdentity } from '../db/repositories/remote-writeback.repository'
+import { markMessageRemoteMissing } from '../db/repositories/message.repository'
+import { fetchVerifiedRemoteMessage } from '../services/remote-writeback-imap'
+import { broadcastWritebackChanged } from '../services/remote-writeback.service'
+import { RemoteMessageMissingError } from './remote-message-error'
 
 type AttachmentDownloadRow = SqliteRow & {
   attachment_id: number
@@ -22,6 +27,7 @@ type AttachmentDownloadRow = SqliteRow & {
   mime_type: string | null
   size_bytes: number
   raw_source: string | null
+  remote_missing: number
 }
 
 export async function downloadAttachment(attachmentId: number): Promise<AttachmentDownloadResult> {
@@ -76,17 +82,27 @@ async function loadAttachmentContentByLocator(
     if (!attachment) throw new Error('未找到可下载的附件内容。')
     return attachment
   }
+  if (locator.remote_missing) {
+    throw new Error('远端原位置已不存在，且本地未缓存该附件，无法下载。')
+  }
 
   const client = await SimpleImapSession.connect(account, 'D')
   try {
     await authenticateImapSession(account, client)
-    await client.selectMailbox(locator.folder_path)
-
-    const rawMessage = await client.fetchRawMessage(locator.uid)
+    const identity = getRemoteMessageIdentity(locator.message_id)
+    if (!identity) throw new Error('邮件远端定位信息已失效，请先同步邮件。')
+    const rawMessage = await fetchVerifiedRemoteMessage(client, identity)
     const attachment = findMatchingAttachment(parseMimeAttachments(rawMessage), locator)
     if (!attachment) throw new Error('未找到可下载的附件内容。')
 
     return attachment
+  } catch (error) {
+    if (error instanceof RemoteMessageMissingError) {
+      markMessageRemoteMissing(locator.message_id)
+      broadcastWritebackChanged()
+      throw new Error('远端原位置已不存在，且本地未缓存该附件，无法下载。')
+    }
+    throw error
   } finally {
     await client.logout().catch(() => undefined)
   }
@@ -102,6 +118,7 @@ function getAttachmentDownloadLocator(attachmentId: number): AttachmentDownloadR
         m.account_id,
         f.path AS folder_path,
         m.uid,
+        m.remote_missing,
         a.filename,
         a.mime_type,
         a.size_bytes

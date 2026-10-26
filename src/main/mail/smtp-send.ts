@@ -460,7 +460,7 @@ async function markAnsweredBestEffort(messageId: number): Promise<string | undef
     return `原邮件本地已标记为已回复，但读取账号失败：${error instanceof Error ? error.message : String(error)}`
   }
   if (!account) return `Account not found: ${source.accountId}`
-  if (account.receiveProtocol === 'pop3') return undefined
+  if (account.receiveProtocol === 'pop3' || source.remoteMissing) return undefined
 
   let writeback: ReturnType<typeof queueRemoteWriteback> | undefined
   try {

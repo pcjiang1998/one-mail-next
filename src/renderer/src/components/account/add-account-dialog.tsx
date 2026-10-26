@@ -173,7 +173,11 @@ export function AddAccountForm({
             <SelectTrigger id="account-kind" aria-label={t('account.form.type')} className="w-full">
               <SelectValue placeholder={t('account.form.type')} />
             </SelectTrigger>
-            <SelectContent viewportClassName="max-h-64 overflow-y-auto">
+            <SelectContent
+              position="popper"
+              align="start"
+              className="max-h-[min(16rem,var(--radix-select-content-available-height))]"
+            >
               <SelectGroup>
                 {providerPresets.map((preset) => (
                   <SelectItem key={preset.kind} value={preset.kind}>

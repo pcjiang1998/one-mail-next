@@ -439,6 +439,8 @@ export async function loadMessageBody(message: Message): Promise<Message> {
   if (!result.body) {
     return {
       ...message,
+      remoteMissing: result.remoteMissing ?? message.remoteMissing,
+      bodyError: result.error,
       bodyStatus: result.error ? 'error' : message.bodyStatus
     }
   }
@@ -722,6 +724,8 @@ function toMessage(message: MailMessageSummary | MailMessageDetail): Message {
     body: bodyTextToParagraphs(bodyText),
     html: body?.bodyHtmlSanitized,
     bodyStatus: message.bodyStatus,
+    bodyError: message.bodyError,
+    remoteMissing: message.remoteMissing,
     bodyLoaded: detailLoaded && message.bodyStatus === 'ready',
     detailLoaded,
     externalImagesBlocked: body?.externalImagesBlocked,

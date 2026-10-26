@@ -111,7 +111,7 @@ function MailReaderContent({
   const { locale, t } = useI18n()
   const canShowHtml = Boolean(message.html)
   const hasLoadedBody = message.bodyLoaded || canShowHtml
-  const canLoadBody = !hasLoadedBody && !loadingBody
+  const canLoadBody = !hasLoadedBody && !loadingBody && !message.remoteMissing
   const [externalContentAllowed, setExternalContentAllowed] = React.useState(false)
   const hasPrivacyApi = typeof window.api?.privacy?.list === 'function'
   const [privacyState, setPrivacyState] = React.useState<{
@@ -335,6 +335,11 @@ function MailReaderContent({
 
       <article className="flex min-h-0 flex-1 flex-col overflow-hidden">
         <section className="shrink-0 border-b px-5 py-4">
+          {message.remoteMissing ? (
+            <p role="status" className="mb-3 text-xs text-muted-foreground">
+              {t('mail.reader.localCopyNotice')}
+            </p>
+          ) : null}
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0 flex-1">
               <h2 className="text-base font-semibold leading-snug tracking-normal">
@@ -436,7 +441,11 @@ function MailReaderContent({
             <Button
               className="pointer-events-auto shadow-md"
               size="sm"
-              disabled={activeTranslation.pending || loadingBody}
+              disabled={
+                activeTranslation.pending ||
+                loadingBody ||
+                (message.remoteMissing && !hasLoadedBody)
+              }
               onClick={() => void handleTranslate()}
             >
               {activeTranslation.pending ? (
@@ -543,6 +552,13 @@ function MessageBody({
   }
 
   if (!canShowHtml && !message.bodyLoaded) {
+    if (message.remoteMissing) {
+      return (
+        <section className="flex min-h-40 items-center justify-center p-5 text-center text-xs text-muted-foreground">
+          {t('mail.reader.remoteMissingBody')}
+        </section>
+      )
+    }
     return (
       <section
         role="button"
@@ -563,6 +579,7 @@ function MessageBody({
             ? t('mail.reader.bodyErrorRetry')
             : t('mail.reader.bodyClickLoad')}
         </span>
+        {message.bodyError ? <span>{message.bodyError}</span> : null}
       </section>
     )
   }

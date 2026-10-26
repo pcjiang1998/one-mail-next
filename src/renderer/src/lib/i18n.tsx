@@ -433,6 +433,8 @@ const zhCN = {
   'account.form.receiveProtocol': '接收协议',
   'account.form.usePopProtocol': '使用 POP 协议',
   'account.form.popNoRealtimeWarning': 'POP3 不支持实时接收，将使用回退同步设置。',
+  'account.form.popRetentionWarning':
+    '服务器可能采用下载后删除等策略，本地副本可能无法再次获取。请前往邮件提供商的 POP 设置，将默认操作改为保留服务器上的原始邮件。',
   'account.form.imapSettings': 'IMAP 设置',
   'account.form.popSettings': 'POP3 设置',
   'account.form.smtpSettings': 'SMTP 设置',
@@ -647,6 +649,9 @@ const zhCN = {
   'mail.reader.remoteHelpTooltip':
     '加载远程图片可能让发件方或追踪服务知道你的 IP、设备信息和打开时间。',
   'mail.reader.bodyErrorRetry': '正文加载失败，点击重试',
+  'mail.reader.localCopyNotice':
+    '仅本地保留：远端原位置已不存在。已读状态仅在本地更新，不再向该位置写回。',
+  'mail.reader.remoteMissingBody': '远端原位置已不存在，且本地未缓存正文，无法加载邮件内容。',
   'mail.reader.bodyClickLoad': '点击加载正文',
   'mail.reader.attachments': '附件',
   'mail.reader.attachmentFileName': '文件名称',
@@ -1269,6 +1274,8 @@ const enUS: TranslationMap = {
   'account.form.usePopProtocol': 'Use POP protocol',
   'account.form.popNoRealtimeWarning':
     'POP3 does not support real-time delivery and uses the fallback sync settings.',
+  'account.form.popRetentionWarning':
+    "The server may delete messages after download, so local copies may not be retrievable again. In your email provider's POP settings, change the default action to keep the original messages on the server.",
   'account.form.imapSettings': 'IMAP settings',
   'account.form.popSettings': 'POP3 settings',
   'account.form.smtpSettings': 'SMTP settings',
@@ -1503,6 +1510,10 @@ const enUS: TranslationMap = {
   'mail.reader.remoteHelpTooltip':
     'Loading remote images may reveal your IP, device information, and open time to the sender or tracking services.',
   'mail.reader.bodyErrorRetry': 'Body failed to load. Click to retry',
+  'mail.reader.localCopyNotice':
+    'Local copy only: the original remote location is unavailable. Read state is updated locally and is no longer written back to that location.',
+  'mail.reader.remoteMissingBody':
+    'The original remote location is unavailable and the body was not cached locally. The message content cannot be loaded.',
   'mail.reader.bodyClickLoad': 'Click to load body',
   'mail.reader.attachments': 'Attachments',
   'mail.reader.attachmentFileName': 'File name',

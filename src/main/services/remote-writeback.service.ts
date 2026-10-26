@@ -15,7 +15,16 @@ import {
   recoverInterruptedRemoteWritebacks,
   updateRemoteWritebackStatus
 } from '../db/repositories/remote-writeback.repository'
-import { getMessage } from '../db/repositories/message.repository'
+import {
+  getMessage,
+  getMessageReadStateTarget,
+  markMessageRemoteMissing,
+  updateMessageReadState
+} from '../db/repositories/message.repository'
+import {
+  RemoteMessageMissingError,
+  REMOTE_MESSAGE_MISSING_NOTICE
+} from '../mail/remote-message-error'
 
 export type QueueRemoteWritebackInput = {
   accountId: number
@@ -74,9 +83,13 @@ export function markRemoteWritebackFailed(
   return finishRemoteWriteback(writebackId, 'failed', errorMessage)
 }
 
+export function cancelRemoteWriteback(writebackId: number, reason: string): RemoteWriteback | null {
+  return finishRemoteWriteback(writebackId, 'cancelled', reason)
+}
+
 function finishRemoteWriteback(
   writebackId: number,
-  status: 'success' | 'failed',
+  status: 'success' | 'failed' | 'cancelled',
   errorMessage?: string
 ): RemoteWriteback | null {
   try {
@@ -130,6 +143,9 @@ export async function retryWriteback(writebackId: number): Promise<boolean> {
   }
   const payload = getRemoteWritebackPayload(writebackId)
   if (!payload) throw new Error('写回记录缺少有效的远端定位信息，请先同步邮件。')
+  const readStateRevision = record.messageId
+    ? getMessageReadStateTarget(record.messageId)?.readStateRevision
+    : undefined
 
   // Claim synchronously before the first await: duplicate clicks cannot run twice.
   if (!markRemoteWritebackRunning(writebackId)) return false
@@ -139,6 +155,18 @@ export async function retryWriteback(writebackId: number): Promise<boolean> {
     markRemoteWritebackSuccess(writebackId)
     return true
   } catch (error) {
+    if (error instanceof RemoteMessageMissingError && record.messageId) {
+      markMessageRemoteMissing(record.messageId)
+      if (
+        !hasNewerFlagWriteback(record) &&
+        getMessageReadStateTarget(record.messageId)?.readStateRevision === readStateRevision &&
+        (record.operationKind === 'mark_read' || record.operationKind === 'mark_unread')
+      ) {
+        updateMessageReadState(record.messageId, record.operationKind === 'mark_read')
+      }
+      cancelRemoteWriteback(writebackId, REMOTE_MESSAGE_MISSING_NOTICE)
+      return false
+    }
     markRemoteWritebackFailed(writebackId, error instanceof Error ? error.message : String(error))
     throw error
   }

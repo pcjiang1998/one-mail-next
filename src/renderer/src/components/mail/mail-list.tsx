@@ -197,23 +197,6 @@ export function MailList({
           </InputGroup>
           <MailFilterTags value={filters} onValueChange={onChangeFilters} />
         </div>
-        {hasSelection &&
-        onSelectAllVisible &&
-        onClearSelection &&
-        onMarkSelectedRead &&
-        onDeleteSelected ? (
-          <MailListSelectionToolbar
-            selectedCount={selectedCount}
-            unreadSelectedCount={unreadSelectedCount}
-            allVisibleSelected={allVisibleSelected}
-            someVisibleSelected={someVisibleSelected}
-            disabled={selectionDisabled}
-            onSelectAllVisible={onSelectAllVisible}
-            onClearSelection={onClearSelection}
-            onMarkSelectedRead={onMarkSelectedRead}
-            onDeleteSelected={onDeleteSelected}
-          />
-        ) : null}
       </header>
 
       <div
@@ -328,6 +311,19 @@ export function MailList({
           )}
         </TooltipProvider>
       </div>
+      {onSelectAllVisible && onClearSelection && onMarkSelectedRead && onDeleteSelected ? (
+        <MailListSelectionToolbar
+          selectedCount={selectedCount}
+          unreadSelectedCount={unreadSelectedCount}
+          allVisibleSelected={allVisibleSelected}
+          someVisibleSelected={someVisibleSelected}
+          disabled={selectionDisabled || messages.length === 0}
+          onSelectAllVisible={onSelectAllVisible}
+          onClearSelection={onClearSelection}
+          onMarkSelectedRead={onMarkSelectedRead}
+          onDeleteSelected={onDeleteSelected}
+        />
+      ) : null}
     </div>
   )
 }

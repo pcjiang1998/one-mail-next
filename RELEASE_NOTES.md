@@ -1,5 +1,35 @@
 # OneMail Next 版本记录 / Release notes
 
+## v26.1026.1352（2026-10-26）
+
+完整补丁与版本说明：[v26.1026.1352](./docs/releases/v26.1026.1352.md)。升级基线为 `v26.1024.1715`，应用版本为 `26.1026.1352`。
+
+### 中文
+
+- 修复邮箱、草稿箱和发送队列切换时侧边栏宽度跳变，共享外层账号栏布局。
+- 修复添加账号时服务商下拉框的滚动与定位冲突；窗口默认调整为 520 × 680，支持缩放。
+- 主题和正文均为空白时不保存草稿，仅填写收件人也不保存；附件和内嵌图片仍视为有效内容。
+- 确认远端原位置不存在后保留可见的本地副本，允许本地已读更新和阅读缓存内容，停止无效远端写回；未缓存内容明确提示不可获取。
+- 将邮件批量操作栏固定在列表面板底部，始终预留 48px，避免选择操作引起列表跳动。
+- 修复翻译按钮覆盖设置、写信及弹层；添加 POP 协议的服务器保留原件提示。
+- 升级自动增加远端缺失标记和已读状态修订号，恢复此前因全量同步隐藏的本地副本，保留用户主动删除状态；建议升级前备份。
+- Release 工作流按标签检出代码、核对应用版本，并使用对应独立说明文件作为发布正文。
+- 本地通过 58 个测试文件、271 个用例、类型检查、生产构建和浏览器交互验证；暂存区 TS/TSX 无 ESLint 错误。既有全仓库 lint 错误、真实 IMAP 延迟交错及各平台安装包人工验收仍未解决或完成。
+
+### English
+
+Patch release following `v26.1024.1715`, with application version `26.1026.1352`.
+
+- Shared sidebar sizing across mail, drafts, and outbox; fixed provider-menu scrolling and made the add-account window larger and resizable.
+- Skip whitespace-only drafts, including recipient-only drafts, while retaining attachments and inline images as meaningful content.
+- Preserve visible local copies when the original remote location is confirmed missing, allow local read-state updates and cached content access, and stop obsolete remote writebacks. Uncached content remains unavailable.
+- Keep the selection toolbar in a reserved 48px footer; correct translation-button layering and add the POP server-retention warning.
+- Automatically migrate remote-missing/read-revision fields and recover copies hidden by earlier full synchronization without undoing deliberate local deletions. Back up before upgrading.
+- Release builds check out and validate the selected version tag and use its standalone notes.
+- Local verification passed 271 tests in 58 files, type checks, production build, browser interaction checks, and error-level ESLint for staged TS/TSX files. Existing repository lint errors, live-server timing validation, and installed-package smoke tests remain outside this verification.
+
+---
+
 ## v26.1024.1715（2026-10-24）
 
 完整累计更新说明：[v26.730.1039 至 v26.1024.1715](./docs/releases/v26.1024.1715.md)。GitHub Release 正文使用这份独立说明，不包含下方历史开发记录。

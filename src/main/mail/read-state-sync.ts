@@ -11,13 +11,16 @@ import {
 import {
   getMessageReadStateTarget,
   listUnreadMessageIds,
+  markMessageRemoteMissing,
   type MessageReadStateTarget,
   updateMessageReadState
 } from '../db/repositories/message.repository'
 import { authenticateImapSession } from './imap-auth'
 import { SimpleImapSession } from './imap-session'
 import { selectAndVerifyRemoteMessage } from '../services/remote-writeback-imap'
+import { RemoteMessageMissingError, REMOTE_MESSAGE_MISSING_NOTICE } from './remote-message-error'
 import {
+  cancelRemoteWriteback,
   markRemoteWritebackFailed,
   markRemoteWritebackRunning,
   markRemoteWritebackSuccess,
@@ -38,7 +41,8 @@ export async function syncMessageReadState(
       messageId,
       accountId: target.accountId,
       folderId: target.folderId,
-      isRead
+      isRead,
+      remoteMissing: target.remoteMissing
     }
   }
 
@@ -47,7 +51,7 @@ export async function syncMessageReadState(
     throw new Error(`Account not found: ${target.accountId}`)
   }
 
-  if (account.receiveProtocol === 'pop3') {
+  if (account.receiveProtocol === 'pop3' || target.remoteMissing) {
     return updateMessageReadState(messageId, isRead)
   }
 
@@ -66,12 +70,20 @@ export async function syncMessageReadState(
     client = await SimpleImapSession.connect(account, 'R')
     await authenticateImapSession(account, client)
     const identity = getRemoteMessageIdentity(messageId)
+    if (!identity && getMessageReadStateTarget(messageId)?.remoteMissing) {
+      throw new RemoteMessageMissingError()
+    }
     if (!identity) throw new Error('邮件远端定位信息已失效，请先同步邮件。')
     assertTargetIdentity(target, identity)
     await selectAndVerifyRemoteMessage(client, identity)
     await client.setSeenFlag(identity.uid, isRead)
     markRemoteWritebackSuccess(writeback.writebackId)
   } catch (error) {
+    if (error instanceof RemoteMessageMissingError) {
+      markMessageRemoteMissing(messageId)
+      cancelRemoteWriteback(writeback.writebackId, REMOTE_MESSAGE_MISSING_NOTICE)
+      return updateMessageReadState(messageId, isRead)
+    }
     markRemoteWritebackFailed(
       writeback.writebackId,
       error instanceof Error ? error.message : '同步已读状态失败。'
@@ -128,6 +140,11 @@ export async function syncMessagesReadState(
 
     const pending: Array<{ target: MessageReadStateTarget; writebackId: number }> = []
     for (const target of group.targets) {
+      if (target.remoteMissing) {
+        updates.push(updateMessageReadState(target.messageId, isRead))
+        succeededMessageIds.push(target.messageId)
+        continue
+      }
       if (target.isRead === isRead) {
         updates.push({
           messageId: target.messageId,
@@ -182,11 +199,21 @@ export async function syncMessagesReadState(
       for (const { target, writebackId } of pending) {
         try {
           const identity = getRemoteMessageIdentity(target.messageId)
+          if (!identity && getMessageReadStateTarget(target.messageId)?.remoteMissing) {
+            throw new RemoteMessageMissingError()
+          }
           if (!identity) throw new Error('邮件远端定位信息已失效，请先同步邮件。')
           assertTargetIdentity(target, identity)
           await selectAndVerifyRemoteMessage(client, identity)
           await client.setSeenFlag(identity.uid, isRead)
         } catch (error) {
+          if (error instanceof RemoteMessageMissingError) {
+            markMessageRemoteMissing(target.messageId)
+            cancelRemoteWriteback(writebackId, REMOTE_MESSAGE_MISSING_NOTICE)
+            updates.push(updateMessageReadState(target.messageId, isRead))
+            succeededMessageIds.push(target.messageId)
+            continue
+          }
           const message = getReadStateErrorMessage(error)
           markRemoteWritebackFailed(writebackId, message)
           failedItems.push({

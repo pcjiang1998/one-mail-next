@@ -136,6 +136,8 @@ export function MailboxWorkspace({
   const [dialogAccountId, setDialogAccountId] = React.useState<string | null>(null)
   const [warningAccountId, setWarningAccountId] = React.useState<string | null>(null)
   const [workspaceView, setWorkspaceView] = React.useState<'mail' | 'drafts' | 'outbox'>('mail')
+  const [contentWidth, setContentWidth] = React.useState(741)
+  const mailMinimumScale = Math.min(1, (contentWidth - 1) / 740)
   const draftsOpen = workspaceView === 'drafts'
   const outboxOpen = workspaceView === 'outbox'
   const [outboxMessages, setOutboxMessages] = React.useState<OutboxMessage[]>([])
@@ -215,19 +217,14 @@ export function MailboxWorkspace({
     localDeletedOnly: selectedMailbox.localDeletedOnly === true,
     onDeleted: refreshAccounts
   })
-  const mainLayout = ResizablePrimitive.useDefaultLayout({
-    id: 'onemail-main-layout',
-    panelIds: ['accounts', 'messages', 'reader']
+  const workspaceLayout = ResizablePrimitive.useDefaultLayout({
+    id: 'onemail-workspace-layout',
+    panelIds: ['accounts', 'content']
   })
-  const draftsLayout = ResizablePrimitive.useDefaultLayout({
-    id: 'onemail-drafts-layout',
-    panelIds: ['accounts', 'drafts']
+  const mailLayout = ResizablePrimitive.useDefaultLayout({
+    id: 'onemail-mail-content-layout',
+    panelIds: ['messages', 'reader']
   })
-  const outboxLayout = ResizablePrimitive.useDefaultLayout({
-    id: 'onemail-outbox-layout',
-    panelIds: ['accounts', 'outbox']
-  })
-  const activeLayout = draftsOpen ? draftsLayout : outboxOpen ? outboxLayout : mainLayout
 
   const dialogAccount =
     accounts.find((account) => account.id === dialogAccountId) ??
@@ -976,17 +973,11 @@ export function MailboxWorkspace({
         />
       ) : (
         <ResizablePanelGroup
-          id={
-            draftsOpen
-              ? 'onemail-drafts-layout'
-              : outboxOpen
-                ? 'onemail-outbox-layout'
-                : 'onemail-main-layout'
-          }
+          id="onemail-workspace-layout"
           orientation="horizontal"
-          defaultLayout={activeLayout.defaultLayout}
-          onLayoutChanged={activeLayout.onLayoutChanged}
-          className="min-h-0 flex-1 overflow-hidden"
+          defaultLayout={workspaceLayout.defaultLayout}
+          onLayoutChanged={workspaceLayout.onLayoutChanged}
+          className="isolate min-h-0 flex-1 overflow-hidden"
         >
           <ResizablePanel
             id="accounts"
@@ -1039,8 +1030,12 @@ export function MailboxWorkspace({
 
           <ResizableHandle />
 
-          {draftsOpen ? (
-            <ResizablePanel id="drafts" minSize="280px">
+          <ResizablePanel
+            id="content"
+            minSize="280px"
+            onResize={(size) => setContentWidth(size.inPixels)}
+          >
+            {draftsOpen ? (
               <DraftList
                 accounts={realAccounts}
                 messages={drafts.result?.messages ?? []}
@@ -1063,9 +1058,7 @@ export function MailboxWorkspace({
                 onDelete={handleDeleteOutbox}
                 onDeleteMany={handleDeleteDrafts}
               />
-            </ResizablePanel>
-          ) : outboxOpen ? (
-            <ResizablePanel id="outbox" minSize="280px">
+            ) : outboxOpen ? (
               <OutboxPanel
                 onClear={handleClearOutbox}
                 pending={outboxPending}
@@ -1080,98 +1073,106 @@ export function MailboxWorkspace({
                   await handleDeleteOutbox(message)
                 }}
               />
-            </ResizablePanel>
-          ) : (
-            <>
-              <ResizablePanel
-                id="messages"
-                defaultSize="420px"
-                minSize="320px"
-                groupResizeBehavior="preserve-pixel-size"
+            ) : (
+              <ResizablePanelGroup
+                id="onemail-mail-content-layout"
+                orientation="horizontal"
+                defaultLayout={mailLayout.defaultLayout}
+                onLayoutChanged={mailLayout.onLayoutChanged}
+                className="h-full min-h-0 min-w-0 overflow-hidden"
               >
-                <MailList
-                  account={selectedAccount}
-                  messages={messages}
-                  selectedMessageId={selectedMessageId}
-                  filters={filters}
-                  searchKeyword={searchKeyword}
-                  loading={loading}
-                  loadingMore={messagePage.loadingMore}
-                  hasMore={messagePage.hasMore}
-                  error={error}
-                  onSelectMessage={handleSelectMessage}
-                  onChangeFilters={handleChangeFilters}
-                  onChangeSearchKeyword={handleChangeSearchKeyword}
-                  onLoadMore={loadMoreMessages}
-                  onMarkAllRead={() => {
-                    void handleMarkAllRead()
-                  }}
-                  markAllUnreadCount={selectedMailboxUnread}
-                  selectedMessageIds={selectedMessageIds}
-                  allVisibleSelected={allVisibleSelected}
-                  someVisibleSelected={someVisibleSelected}
-                  selectionDisabled={deleting || markingRead}
-                  onToggleMessageSelection={toggleMessageSelection}
-                  onPrepareContextSelection={selectMessageForContext}
-                  onSelectAllVisible={selectAllVisible}
-                  onClearSelection={clearSelection}
-                  onMarkSelectedRead={() => {
-                    void handleMarkSelectedRead()
-                  }}
-                  onDeleteSelected={() => requestDeleteMessages(selectedMessages)}
-                  onMarkMessagesRead={(targetMessages) => {
-                    void handleMarkMessagesRead(targetMessages)
-                  }}
-                  onReplyMessage={(message, replyAll) => {
-                    void openComposer(replyAll ? 'reply_all' : 'reply', message)
-                  }}
-                  onForwardMessages={(targetMessages, asAttachments) => {
-                    void openForwardMessages(targetMessages, asAttachments)
-                  }}
-                  onDeleteMessages={requestDeleteMessages}
-                  onAddToBoard={(message) => setTaskMessage(message)}
-                />
-              </ResizablePanel>
+                <ResizablePanel
+                  id="messages"
+                  defaultSize="420px"
+                  minSize={`${320 * mailMinimumScale}px`}
+                  groupResizeBehavior="preserve-pixel-size"
+                >
+                  <MailList
+                    account={selectedAccount}
+                    messages={messages}
+                    selectedMessageId={selectedMessageId}
+                    filters={filters}
+                    searchKeyword={searchKeyword}
+                    loading={loading}
+                    loadingMore={messagePage.loadingMore}
+                    hasMore={messagePage.hasMore}
+                    error={error}
+                    onSelectMessage={handleSelectMessage}
+                    onChangeFilters={handleChangeFilters}
+                    onChangeSearchKeyword={handleChangeSearchKeyword}
+                    onLoadMore={loadMoreMessages}
+                    onMarkAllRead={() => {
+                      void handleMarkAllRead()
+                    }}
+                    markAllUnreadCount={selectedMailboxUnread}
+                    selectedMessageIds={selectedMessageIds}
+                    allVisibleSelected={allVisibleSelected}
+                    someVisibleSelected={someVisibleSelected}
+                    selectionDisabled={deleting || markingRead}
+                    onToggleMessageSelection={toggleMessageSelection}
+                    onPrepareContextSelection={selectMessageForContext}
+                    onSelectAllVisible={selectAllVisible}
+                    onClearSelection={clearSelection}
+                    onMarkSelectedRead={() => {
+                      void handleMarkSelectedRead()
+                    }}
+                    onDeleteSelected={() => requestDeleteMessages(selectedMessages)}
+                    onMarkMessagesRead={(targetMessages) => {
+                      void handleMarkMessagesRead(targetMessages)
+                    }}
+                    onReplyMessage={(message, replyAll) => {
+                      void openComposer(replyAll ? 'reply_all' : 'reply', message)
+                    }}
+                    onForwardMessages={(targetMessages, asAttachments) => {
+                      void openForwardMessages(targetMessages, asAttachments)
+                    }}
+                    onDeleteMessages={requestDeleteMessages}
+                    onAddToBoard={(message) => setTaskMessage(message)}
+                  />
+                </ResizablePanel>
 
-              <ResizableHandle />
+                <ResizableHandle />
 
-              <ResizablePanel id="reader" minSize="420px">
-                <article className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
-                  {selectedMessage ? (
-                    <MailReader
-                      message={selectedMessage}
-                      recipientAddress={selectedMessageAccount?.address ?? selectedAccount.address}
-                      loading={
-                        !selectedMessage.detailLoaded || loadingMessageId === selectedMessage.id
-                      }
-                      loadingBody={loadingBodyMessageId === selectedMessage.id}
-                      externalImagesBlocked={settings?.externalImagesBlocked ?? true}
-                      downloadingAttachmentIds={downloadingAttachmentIds}
-                      actionPending={composerPending}
-                      deleting={deletingMessageIds.has(selectedMessage.id)}
-                      onLoadBody={() => loadMessageBody(selectedMessage)}
-                      onDownloadAttachment={(attachment) => {
-                        if (attachment.id !== undefined) {
-                          downloadMessageAttachment(selectedMessage, attachment.id)
+                <ResizablePanel id="reader" minSize={`${420 * mailMinimumScale}px`}>
+                  <article className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+                    {selectedMessage ? (
+                      <MailReader
+                        message={selectedMessage}
+                        recipientAddress={
+                          selectedMessageAccount?.address ?? selectedAccount.address
                         }
-                      }}
-                      onReply={() => {
-                        void openComposer('reply', selectedMessage)
-                      }}
-                      onForward={() => {
-                        void openComposer('forward', selectedMessage)
-                      }}
-                      onDelete={() => requestDeleteMessages([selectedMessage])}
-                    />
-                  ) : (
-                    <div className="flex h-full items-center justify-center p-8 text-xs text-muted-foreground">
-                      {t('mailbox.selectPreview')}
-                    </div>
-                  )}
-                </article>
-              </ResizablePanel>
-            </>
-          )}
+                        loading={
+                          !selectedMessage.detailLoaded || loadingMessageId === selectedMessage.id
+                        }
+                        loadingBody={loadingBodyMessageId === selectedMessage.id}
+                        externalImagesBlocked={settings?.externalImagesBlocked ?? true}
+                        downloadingAttachmentIds={downloadingAttachmentIds}
+                        actionPending={composerPending}
+                        deleting={deletingMessageIds.has(selectedMessage.id)}
+                        onLoadBody={() => loadMessageBody(selectedMessage)}
+                        onDownloadAttachment={(attachment) => {
+                          if (attachment.id !== undefined) {
+                            downloadMessageAttachment(selectedMessage, attachment.id)
+                          }
+                        }}
+                        onReply={() => {
+                          void openComposer('reply', selectedMessage)
+                        }}
+                        onForward={() => {
+                          void openComposer('forward', selectedMessage)
+                        }}
+                        onDelete={() => requestDeleteMessages([selectedMessage])}
+                      />
+                    ) : (
+                      <div className="flex h-full items-center justify-center p-8 text-xs text-muted-foreground">
+                        {t('mailbox.selectPreview')}
+                      </div>
+                    )}
+                  </article>
+                </ResizablePanel>
+              </ResizablePanelGroup>
+            )}
+          </ResizablePanel>
         </ResizablePanelGroup>
       )}
 

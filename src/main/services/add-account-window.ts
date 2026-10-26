@@ -25,16 +25,14 @@ export function openAddAccountWindow(): void {
         : ({ titleBarStyle: 'hidden' } as const)
 
   const nextWindow = new BrowserWindow({
-    width: 440,
-    height: 460,
+    width: 520,
+    height: 680,
     minWidth: 440,
     minHeight: 460,
-    maxWidth: 440,
-    maxHeight: 460,
     title: '添加账号 - OneMail',
     show: false,
     autoHideMenuBar: true,
-    resizable: false,
+    resizable: true,
     ...titleBarOptions,
     ...(process.platform !== 'darwin' ? { icon: windowIcon } : {}),
     webPreferences: {

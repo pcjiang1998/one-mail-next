@@ -276,7 +276,7 @@ export function useMailboxMessages({
 
       try {
         const detail = await loadMessageBody(message)
-        replaceMessage(message.id, detail, setMessages)
+        replaceLoadedMessageBody(message.id, detail, setMessages)
         return detail
       } catch (loadError) {
         setError(getErrorMessage(loadError, t('mailbox.loadBodyError')))
@@ -307,7 +307,7 @@ export function useMailboxMessages({
 
       void loadMessageBody(message)
         .then((detail) => {
-          replaceMessage(message.id, detail, setMessages)
+          replaceLoadedMessageBody(message.id, detail, setMessages)
         })
         .catch(() => undefined)
         .finally(() => {
@@ -325,9 +325,13 @@ export function useMailboxMessages({
       setError(null)
 
       void setMessageReadState(message.messageId, true)
-        .then(() => {
+        .then((update) => {
           setMessages((current) =>
-            current.map((item) => (item.id === message.id ? { ...item, unread: false } : item))
+            current.map((item) =>
+              item.id === message.id
+                ? { ...item, unread: false, remoteMissing: update.remoteMissing }
+                : item
+            )
           )
           setAccounts((current) => decrementUnreadCount(current, message.accountId))
         })
@@ -346,6 +350,9 @@ export function useMailboxMessages({
       if (result.updates.length === 0) return
 
       const succeededIds = new Set(result.updates.map((update) => String(update.messageId)))
+      const updatesById = new Map(
+        result.updates.map((update) => [String(update.messageId), update])
+      )
       const accountUnreadDelta = new Map<number, number>()
 
       for (const update of result.updates) {
@@ -362,7 +369,13 @@ export function useMailboxMessages({
 
       setMessages((current) =>
         current.map((message) =>
-          succeededIds.has(message.id) ? { ...message, unread: !result.isRead } : message
+          succeededIds.has(message.id)
+            ? {
+                ...message,
+                unread: !result.isRead,
+                remoteMissing: updatesById.get(message.id)?.remoteMissing
+              }
+            : message
         )
       )
 
@@ -542,6 +555,25 @@ function replaceMessage(
 ): void {
   setMessages((current) =>
     current.map((item) => (item.id === messageId ? { ...item, ...detail } : item))
+  )
+}
+
+function replaceLoadedMessageBody(
+  messageId: string,
+  detail: Message,
+  setMessages: React.Dispatch<React.SetStateAction<Message[]>>
+): void {
+  setMessages((current) =>
+    current.map((item) =>
+      item.id === messageId
+        ? {
+            ...item,
+            ...detail,
+            unread: item.unread,
+            remoteMissing: item.remoteMissing || detail.remoteMissing
+          }
+        : item
+    )
   )
 }
 

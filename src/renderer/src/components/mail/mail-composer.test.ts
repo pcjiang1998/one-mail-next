@@ -1,6 +1,32 @@
 import { describe, expect, it } from 'vitest'
 
-import { getAttachmentKey, getUnselectedForwardAttachments } from './mail-composer'
+import { getAttachmentKey, getUnselectedForwardAttachments, hasDraftContent } from './mail-composer'
+
+describe('MailComposer empty drafts', () => {
+  it.each(['', '<p></p>', '<p><br></p>', '<p> \n\t&nbsp; </p>', '<p>&#32;&#10;&#160;</p>'])(
+    'does not save blank subject and blank rich text: %s',
+    (bodyHtml) => {
+      expect(
+        hasDraftContent({ subject: ' \t\n', bodyText: ' \r\n\t\u00a0', bodyHtml, attachments: [] })
+      ).toBe(false)
+    }
+  )
+
+  it.each([
+    { subject: 'Subject', bodyText: '', bodyHtml: '', attachments: [] },
+    { subject: '', bodyText: 'Content', bodyHtml: '', attachments: [] },
+    { subject: '', bodyText: '', bodyHtml: '<p>&lt;Hello&gt;</p>', attachments: [] },
+    {
+      subject: '',
+      bodyText: '',
+      bodyHtml: '<img src="data:image/png;base64,AA==">',
+      attachments: []
+    },
+    { subject: '', bodyText: '', bodyHtml: '', attachments: [{ filename: 'report.pdf' }] }
+  ])('keeps meaningful draft content: %o', (form) => {
+    expect(hasDraftContent(form)).toBe(true)
+  })
+})
 
 describe('MailComposer forwarded attachments', () => {
   it('keeps unselected forward attachments separate from selected attachments', () => {
