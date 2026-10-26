@@ -601,6 +601,7 @@ export function markMessageAnswered(messageId: number, isAnswered = true): void 
       `
       UPDATE onemail_mail_messages
       SET is_answered = :isAnswered,
+          state_revision = state_revision + 1,
           flags_json = :flagsJson,
           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE message_id = :messageId
@@ -681,6 +682,7 @@ export function updateMessageReadState(messageId: number, isRead: boolean): Mess
       UPDATE onemail_mail_messages
       SET is_read = :isRead,
           read_state_revision = read_state_revision + 1,
+          state_revision = state_revision + 1,
           flags_json = :flagsJson,
           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE message_id = :messageId
@@ -712,6 +714,7 @@ export function markMessageRemoteMissing(messageId: number): void {
   db.prepare(
     `UPDATE onemail_mail_messages
      SET remote_missing = 1,
+         state_revision = state_revision + 1,
          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
      WHERE message_id = :messageId`
   ).run({ messageId })
@@ -748,7 +751,16 @@ export function markMessageUserHidden(messageId: number): void {
 export function markMessageMovedToTrash(
   messageId: number,
   trashFolderId: number,
-  destinationUid?: number
+  destinationUid: number
+): void {
+  markMessageMoved(messageId, trashFolderId, destinationUid, true)
+}
+
+export function markMessageMoved(
+  messageId: number,
+  destinationFolderId: number,
+  destinationUid: number,
+  hidden: boolean
 ): void {
   const db = getDatabase()
   const target = getMessageDeleteTarget(messageId)
@@ -767,7 +779,7 @@ export function markMessageMovedToTrash(
         `
       ).run({
         accountId: target.accountId,
-        folderId: trashFolderId,
+        folderId: destinationFolderId,
         uid: destinationUid,
         messageId
       })
@@ -776,17 +788,22 @@ export function markMessageMovedToTrash(
     db.prepare(
       `
       UPDATE onemail_mail_messages
-      SET folder_id = CASE WHEN :destinationUid IS NULL THEN folder_id ELSE :trashFolderId END,
-          uid = COALESCE(:destinationUid, uid),
-          user_hidden = 1,
-          user_deleted = 1,
+      SET folder_id = :destinationFolderId,
+          uid = :destinationUid,
+          user_hidden = :hidden,
+          user_deleted = :hidden,
+          remote_missing = 0,
+          state_revision = state_revision + 1,
           delete_error = NULL,
-          deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+          deleted_at = CASE WHEN :hidden = 1 THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ELSE NULL END,
           last_operation_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE message_id = :messageId
       `
-    ).run({ messageId, trashFolderId, destinationUid: destinationUid ?? null })
+    ).run({ messageId, destinationFolderId, destinationUid, hidden: hidden ? 1 : 0 })
+    db.prepare(
+      'UPDATE onemail_message_search SET folder_id = :folderId WHERE message_id = :messageId'
+    ).run({ folderId: destinationFolderId, messageId })
     db.exec('COMMIT')
   } catch (error) {
     db.exec('ROLLBACK')
@@ -794,7 +811,7 @@ export function markMessageMovedToTrash(
   }
 
   refreshFolderUnreadCount(target.folderId)
-  if (destinationUid && trashFolderId !== target.folderId) refreshFolderUnreadCount(trashFolderId)
+  if (destinationFolderId !== target.folderId) refreshFolderUnreadCount(destinationFolderId)
 }
 
 export function restoreMessageLocally(messageId: number): void {
@@ -929,6 +946,7 @@ function updateMessageDeleteState(
       `
       UPDATE onemail_mail_messages
       SET ${assignments.join(', ')},
+          state_revision = state_revision + 1,
           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE message_id = :messageId
       `

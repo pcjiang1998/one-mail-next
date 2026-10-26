@@ -11,6 +11,12 @@ type StoredFolderRow = SqliteRow & {
   sync_enabled: number
 }
 
+export type PreparedFolderSelection = {
+  accountId: number
+  mailboxes: ImapMailbox[]
+  requestedKeys: Set<string>
+}
+
 export async function discoverAccountMailFolders(accountId: number): Promise<AccountMailFolder[]> {
   const account = getAccount(accountId)
   if (!account) throw new Error(`Account not found: ${accountId}`)
@@ -26,7 +32,17 @@ export async function updateAccountFolderSelection(
   const account = getAccount(accountId)
   if (!account) throw new Error(`Account not found: ${accountId}`)
   if (account.receiveProtocol === 'pop3') return account.folders
-  const mailboxes = await listRemoteMailboxes(accountId)
+  return commitAccountFolderSelection(
+    await prepareAccountFolderSelection(account, selectedFolderPaths)
+  )
+}
+
+export async function prepareAccountFolderSelection(
+  account: NonNullable<ReturnType<typeof getAccount>>,
+  selectedFolderPaths: string[],
+  password?: string
+): Promise<PreparedFolderSelection> {
+  const mailboxes = await listRemoteMailboxes(account.accountId, account, password)
   const selectable = mailboxes.filter((mailbox) => mailbox.selectable)
   const pathsByKey = new Map(
     selectable.map((mailbox) => [normalizePath(mailbox.path), mailbox.path])
@@ -44,8 +60,14 @@ export async function updateAccountFolderSelection(
     if (!pathsByKey.has(key)) throw new Error(`文件夹已不存在或不可选择：${key}`)
   }
 
-  persistFolderSelection(accountId, mailboxes, requestedKeys)
-  return applyStoredSelection(accountId, mailboxes)
+  return { accountId: account.accountId, mailboxes, requestedKeys }
+}
+
+export function commitAccountFolderSelection(
+  selection: PreparedFolderSelection
+): AccountMailFolder[] {
+  persistFolderSelection(selection.accountId, selection.mailboxes, selection.requestedKeys)
+  return applyStoredSelection(selection.accountId, selection.mailboxes)
 }
 
 export function getSelectedFolderPathKeys(accountId: number): Set<string> {
@@ -62,13 +84,24 @@ export function getSelectedFolderPathKeys(accountId: number): Set<string> {
   return new Set(rows.map((row) => normalizePath(row.path)))
 }
 
-async function listRemoteMailboxes(accountId: number): Promise<ImapMailbox[]> {
-  const account = getAccount(accountId)
+async function listRemoteMailboxes(
+  accountId: number,
+  candidate?: NonNullable<ReturnType<typeof getAccount>>,
+  password?: string
+): Promise<ImapMailbox[]> {
+  const account = candidate ?? getAccount(accountId)
   if (!account) throw new Error(`Account not found: ${accountId}`)
 
   const session = await SimpleImapSession.connect(account, 'F')
   try {
-    await authenticateImapSession(account, session)
+    if (password !== undefined && account.authType !== 'oauth2') {
+      const normalizedPassword =
+        account.authType === 'app_password' ? password.trim().replace(/\s+/g, '') : password.trim()
+      await session.login(account.email, normalizedPassword)
+      await session.identifyClient()
+    } else {
+      await authenticateImapSession(account, session)
+    }
     return (await session.listMailboxes()).sort(compareMailboxes)
   } finally {
     await session.logout().catch(() => undefined)
@@ -117,7 +150,7 @@ function persistFolderSelection(
     'DELETE FROM onemail_mail_folders WHERE folder_id = :folderId AND account_id = :accountId'
   )
 
-  db.exec('BEGIN IMMEDIATE')
+  db.exec('SAVEPOINT account_folder_selection')
   try {
     for (const row of existingRows) {
       if (!remoteKeys.has(normalizePath(row.path))) {
@@ -184,9 +217,10 @@ function persistFolderSelection(
       ).run(values)
     }
 
-    db.exec('COMMIT')
+    db.exec('RELEASE account_folder_selection')
   } catch (error) {
-    db.exec('ROLLBACK')
+    db.exec('ROLLBACK TO account_folder_selection')
+    db.exec('RELEASE account_folder_selection')
     throw error
   }
 }

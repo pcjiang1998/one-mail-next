@@ -1,4 +1,5 @@
-import { ipcMain, type WebContents } from 'electron'
+import { handleDatabaseIpc } from './database-handler'
+import { type WebContents } from 'electron'
 import {
   deleteSignature,
   getBackupSyncSettings,
@@ -19,7 +20,7 @@ import {
   importDatabaseSqlBackup,
   type BackupImportProgressReporter
 } from '../services/database-backup'
-import { refreshMailboxWatchers } from '../services/mailbox-watch'
+import { refreshMailboxWatchers, restartMailboxWatchers } from '../services/mailbox-watch'
 import { startAutoUpdateChecks } from '../services/auto-update'
 import { getDatabase } from '../db/connection'
 import { setOpenAtLogin } from '../services/login-item'
@@ -32,8 +33,8 @@ import type {
 } from './types'
 
 export function registerSettingsIpc(): void {
-  ipcMain.handle('settings/get', () => getSettings())
-  ipcMain.handle('settings/update', (_event, input: SettingsUpdateInput) => {
+  handleDatabaseIpc('settings/get', () => getSettings())
+  handleDatabaseIpc('settings/update', (_event, input: SettingsUpdateInput) => {
     const previousFrequency = getSettings().updateCheckFrequency
     const settings = updateSettings(input)
     refreshMailboxWatchers()
@@ -42,13 +43,13 @@ export function registerSettingsIpc(): void {
     }
     return settings
   })
-  ipcMain.handle('settings/saveSignature', (_event, input: MailSignatureInput) =>
+  handleDatabaseIpc('settings/saveSignature', (_event, input: MailSignatureInput) =>
     saveSignature(input)
   )
-  ipcMain.handle('settings/deleteSignature', (_event, signatureId: number) =>
+  handleDatabaseIpc('settings/deleteSignature', (_event, signatureId: number) =>
     deleteSignature(signatureId)
   )
-  ipcMain.handle('settings/cleanupCache', (_event, input: unknown) => {
+  handleDatabaseIpc('settings/cleanupCache', (_event, input: unknown) => {
     if (
       !input ||
       typeof input !== 'object' ||
@@ -64,24 +65,24 @@ export function registerSettingsIpc(): void {
       cleanupMetadata: input.cleanupMetadata
     })
   })
-  ipcMain.handle('settings/getBackupSync', () => getBackupSyncSettings())
-  ipcMain.handle('settings/updateBackupSync', (_event, input: BackupSyncSettings) =>
+  handleDatabaseIpc('settings/getBackupSync', () => getBackupSyncSettings())
+  handleDatabaseIpc('settings/updateBackupSync', (_event, input: BackupSyncSettings) =>
     updateBackupSyncSettings(input)
   )
-  ipcMain.handle('settings/testBackupSync', (_event, input: BackupSyncSettings) =>
+  handleDatabaseIpc('settings/testBackupSync', (_event, input: BackupSyncSettings) =>
     testBackupSync(input)
   )
-  ipcMain.handle('settings/uploadBackupSync', (_event, options?: BackupExportOptions) =>
+  handleDatabaseIpc('settings/uploadBackupSync', (_event, options?: BackupExportOptions) =>
     uploadBackupSync(options)
   )
-  ipcMain.handle('settings/downloadBackupSync', async (event, operationId?: string) => {
+  handleDatabaseIpc('settings/downloadBackupSync', async (event, operationId?: string) => {
     const result = await downloadBackupSync(
       createBackupImportProgressReporter(event.sender, operationId)
     )
     if (result.imported) applyRestoredSettings()
     return result
   })
-  ipcMain.handle(
+  handleDatabaseIpc(
     'settings/importBackupFromRemote',
     async (event, input: BackupSyncSettings, operationId?: string) => {
       const result = await downloadBackupSyncFromSettings(
@@ -92,10 +93,10 @@ export function registerSettingsIpc(): void {
       return result
     }
   )
-  ipcMain.handle('settings/exportSql', (_event, options?: BackupExportOptions) =>
+  handleDatabaseIpc('settings/exportSql', (_event, options?: BackupExportOptions) =>
     exportDatabaseSqlBackup(options)
   )
-  ipcMain.handle('settings/importSql', async (event, operationId?: string) => {
+  handleDatabaseIpc('settings/importSql', async (event, operationId?: string) => {
     const result = await importDatabaseSqlBackup(
       createBackupImportProgressReporter(event.sender, operationId)
     )
@@ -112,7 +113,7 @@ function applyRestoredSettings(): void {
     .get()
   if (loginSetting) setOpenAtLogin(loginSetting.setting_value === '1')
   startAutoUpdateChecks(getSettings().updateCheckFrequency)
-  refreshMailboxWatchers()
+  restartMailboxWatchers()
 }
 
 function createBackupImportProgressReporter(

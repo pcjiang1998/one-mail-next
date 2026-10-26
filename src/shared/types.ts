@@ -317,6 +317,7 @@ export type OutboxMessage = {
   deletedAt?: string
   lastError?: string
   lastWarning?: string
+  deliveryUncertain?: boolean
   createdAt: string
   updatedAt: string
 }
@@ -729,6 +730,7 @@ export type AppUpdateStatus = {
   releaseUrl?: string
   message: string
   progress?: AppUpdateProgress
+  errorStage?: 'check' | 'download' | 'install'
   updatedAt: string
 }
 
@@ -1044,6 +1046,7 @@ export type OneMailApi = {
   }
   updates: {
     check: () => Promise<AppUpdateCheckResult>
+    download: () => Promise<boolean>
     status: () => Promise<AppUpdateStatus>
     install: () => Promise<boolean>
     onStatus: (callback: (status: AppUpdateStatus) => void) => () => void

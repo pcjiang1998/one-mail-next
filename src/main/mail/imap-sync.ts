@@ -16,6 +16,10 @@ import { syncCutoff } from '../../shared/sync-range'
 import { fillMissingMessageBodies } from './sync-body-cache'
 import { persistHeaderAddresses } from './message-headers'
 import { withAccountCacheAccess } from '../services/cache-activity'
+import {
+  enqueueMailRulesForNewMessages,
+  processPendingMailRules
+} from '../services/mail-rule-engine.service'
 
 type TestSocket = Socket | TLSSocket
 
@@ -33,6 +37,8 @@ type FetchedFlags = {
   uid: number
   flags: string
 }
+
+type MessageStateSnapshot = Map<number, { messageId: number; revision: number }>
 
 type SyncStats = {
   scannedCount: number
@@ -117,6 +123,7 @@ async function syncAccountMailboxCore(
 
     await fillMissingMessageBodies(account.accountId)
     markAccountSynced(account.accountId)
+    void processPendingMailRules().catch((error) => console.error('处理新邮件规则失败。', error))
     return totals
   } finally {
     await client.logout().catch(() => undefined)
@@ -145,6 +152,7 @@ async function syncAccountNewInboxMessagesCore(accountId: number): Promise<SyncS
 
   await fillMissingMessageBodies(account.accountId)
   markAccountSynced(account.accountId)
+  void processPendingMailRules().catch((error) => console.error('处理新邮件规则失败。', error))
   return totals
 }
 
@@ -361,6 +369,7 @@ async function syncMailboxFull(
   mailbox: SyncMailbox,
   mailboxStatus?: MailboxStatus | null
 ): Promise<SyncStats> {
+  const snapshot = getMessageStateSnapshot(account.accountId, mailbox)
   const selectedValidity = await client.selectMailbox(mailbox.path)
   mailboxStatus = validateMailboxIdentity(
     account.accountId,
@@ -384,7 +393,17 @@ async function syncMailboxFull(
     throw new Error(`${mailbox.name} 已找到邮件，但邮件头解析失败，未写入本地列表。`)
   }
 
-  return persistFetchedHeaders(account, mailbox, headers, flags, uids, true, mailboxStatus)
+  return persistFetchedHeaders(
+    account,
+    mailbox,
+    headers,
+    flags,
+    uids,
+    true,
+    mailboxStatus,
+    snapshot,
+    uids
+  )
 }
 
 async function syncMailboxRefresh(
@@ -393,6 +412,7 @@ async function syncMailboxRefresh(
   mailbox: SyncMailbox,
   mailboxStatus?: MailboxStatus | null
 ): Promise<SyncStats> {
+  const snapshot = getMessageStateSnapshot(account.accountId, mailbox)
   const cursor = getMailboxSyncCursor(account.accountId, mailbox)
   const selectedValidity = await client.selectMailbox(mailbox.path)
   mailboxStatus = validateMailboxIdentity(
@@ -404,6 +424,7 @@ async function syncMailboxRefresh(
   persistMailboxStatus(account.accountId, mailbox, mailboxStatus)
   const cutoff = syncCutoff(getSettings().syncWindowDays)
   const candidateUids = await client.searchSince(cutoff)
+  const remoteUids = await client.searchAll()
   const existingUids = getExistingUids(account.accountId, cursor.folderId, candidateUids)
   const newUids = candidateUids.filter((uid) => !existingUids.has(uid))
   const fetchedHeaders = await fetchHeadersInBatches(client, newUids)
@@ -422,7 +443,9 @@ async function syncMailboxRefresh(
     flags,
     candidateUids,
     false,
-    mailboxStatus
+    mailboxStatus,
+    snapshot,
+    remoteUids
   )
 }
 
@@ -594,7 +617,9 @@ function persistFetchedHeaders(
   flags: FetchedFlags[],
   scannedUids: number[],
   isFullScan: boolean,
-  mailboxStatus?: MailboxStatus | null
+  mailboxStatus: MailboxStatus | null | undefined,
+  snapshot: MessageStateSnapshot,
+  remoteUids: number[]
 ): SyncStats {
   const db = getDatabase()
   const folderId = ensureSyncFolder(account.accountId, mailbox)
@@ -604,6 +629,7 @@ function persistFetchedHeaders(
   const settings = getSettings()
   const cursor = getMailboxSyncCursor(account.accountId, mailbox)
   let cancelledWritebacks = 0
+  const newRuleMessageIds: number[] = []
 
   const insertMessage = db.prepare(
     `
@@ -698,11 +724,11 @@ function persistFetchedHeaders(
   const restoreMessage = db.prepare(
     `
     UPDATE onemail_mail_messages
-    SET remote_deleted = 0,
-        remote_missing = 0,
+    SET remote_missing = 0,
         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     WHERE account_id = :accountId AND folder_id = :folderId AND uid = :uid
-      AND (remote_deleted = 1 OR remote_missing = 1)
+      AND remote_deleted = 0 AND remote_missing = 1
+      AND message_id = :messageId AND state_revision = :revision
     `
   )
   const updateFlags = db.prepare(
@@ -712,10 +738,10 @@ function persistFetchedHeaders(
         is_starred = :isStarred,
         is_answered = :isAnswered,
         flags_json = :flagsJson,
-        remote_deleted = 0,
         remote_missing = 0,
         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     WHERE account_id = :accountId AND folder_id = :folderId AND uid = :uid
+      AND message_id = :messageId AND state_revision = :revision AND remote_deleted = 0
     `
   )
 
@@ -723,14 +749,23 @@ function persistFetchedHeaders(
   try {
     for (const item of headers) {
       const existing = db
-        .prepare<{ message_id: number }>(
+        .prepare<{ message_id: number; state_revision: number; remote_deleted: number }>(
           `
-          SELECT message_id
+          SELECT message_id, state_revision, remote_deleted
           FROM onemail_mail_messages
           WHERE account_id = :accountId AND folder_id = :folderId AND uid = :uid
           `
         )
-        .get({ accountId: account.accountId, folderId, uid: item.uid })?.message_id
+        .get({ accountId: account.accountId, folderId, uid: item.uid })
+      const previous = snapshot.get(item.uid)
+      if (previous && !existing) continue
+      if (
+        existing &&
+        (existing.remote_deleted ||
+          previous?.messageId !== existing.message_id ||
+          previous.revision !== existing.state_revision)
+      )
+        continue
       const parsed = parseHeader(item.header)
       const isBackfill =
         isFullScan ||
@@ -762,7 +797,7 @@ function persistFetchedHeaders(
 
       insertMessage.run(params)
       const messageId =
-        existing ??
+        existing?.message_id ??
         db
           .prepare<{ message_id: number }>(
             `
@@ -799,22 +834,36 @@ function persistFetchedHeaders(
         }
       }
 
-      restoreMessage.run({ accountId: account.accountId, folderId, uid: item.uid })
+      if (previous)
+        restoreMessage.run({
+          accountId: account.accountId,
+          folderId,
+          uid: item.uid,
+          messageId: previous.messageId,
+          revision: previous.revision
+        })
 
       if (existing) {
         updatedCount += 1
       } else {
         insertedCount += 1
+        if (!isBackfill && mailbox.role === 'inbox' && messageId !== undefined) {
+          newRuleMessageIds.push(messageId)
+        }
         if (!isBackfill && mailbox.role === 'inbox') newMailCount += 1
       }
     }
 
     for (const item of flags) {
+      const previous = snapshot.get(item.uid)
+      if (!previous) continue
       const parsedFlags = parseFlags(item.flags)
       const result = updateFlags.run({
         accountId: account.accountId,
         folderId,
         uid: item.uid,
+        messageId: previous.messageId,
+        revision: previous.revision,
         isRead: hasFlag(parsedFlags, 'Seen') ? 1 : 0,
         isStarred: hasFlag(parsedFlags, 'Flagged') ? 1 : 0,
         isAnswered: hasFlag(parsedFlags, 'Answered') ? 1 : 0,
@@ -823,9 +872,13 @@ function persistFetchedHeaders(
       if (result.changes > 0) updatedCount += 1
     }
 
-    if (isFullScan) {
-      cancelledWritebacks = markMissingMessagesDeleted(account.accountId, folderId, scannedUids)
-    }
+    cancelledWritebacks = markMissingMessagesDeleted(
+      account.accountId,
+      folderId,
+      remoteUids,
+      snapshot
+    )
+    enqueueMailRulesForNewMessages(newRuleMessageIds, { initialSync: isFullScan })
     refreshMailboxSyncState(account.accountId, folderId, mailboxStatus, isFullScan)
 
     db.exec('COMMIT')
@@ -836,6 +889,29 @@ function persistFetchedHeaders(
   if (cancelledWritebacks > 0) broadcastWritebackChanged()
 
   return { scannedCount: scannedUids.length, insertedCount, updatedCount, newMailCount }
+}
+
+function getMessageStateSnapshot(accountId: number, mailbox: SyncMailbox): MessageStateSnapshot {
+  const folderId = ensureSyncFolder(accountId, mailbox)
+  const rows = getDatabase()
+    .prepare<{
+      uid: number
+      message_id: number
+      state_revision: number
+    }>(
+      `SELECT uid, message_id, state_revision FROM onemail_mail_messages
+      WHERE account_id = :accountId AND folder_id = :folderId`
+    )
+    .all({ accountId, folderId })
+  return new Map(
+    rows.map((row) => [
+      row.uid,
+      {
+        messageId: row.message_id,
+        revision: row.state_revision
+      }
+    ])
+  )
 }
 
 function persistMailboxStatus(
@@ -945,7 +1021,8 @@ function chunkNumbers(values: number[], size: number): number[][] {
 function markMissingMessagesDeleted(
   accountId: number,
   folderId: number,
-  existingUids: number[]
+  existingUids: number[],
+  snapshot: MessageStateSnapshot
 ): number {
   const db = getDatabase()
 
@@ -957,7 +1034,7 @@ function markMissingMessagesDeleted(
     insertUid.run({ uid })
   }
 
-  db.prepare(
+  const markMissing = db.prepare(
     `
     UPDATE onemail_mail_messages
     SET remote_missing = 1,
@@ -965,13 +1042,22 @@ function markMissingMessagesDeleted(
     WHERE account_id = :accountId
       AND folder_id = :folderId
       AND remote_deleted = 0
+      AND message_id = :messageId AND state_revision = :revision
       AND NOT EXISTS (
         SELECT 1
         FROM current_imap_uids
         WHERE current_imap_uids.uid = onemail_mail_messages.uid
       )
     `
-  ).run({ accountId, folderId })
+  )
+  for (const previous of snapshot.values()) {
+    markMissing.run({
+      accountId,
+      folderId,
+      messageId: previous.messageId,
+      revision: previous.revision
+    })
+  }
   const cancelled = db
     .prepare(
       `UPDATE onemail_remote_writebacks

@@ -1,3 +1,4 @@
+import { handleDatabaseIpc } from './database-handler'
 import { ipcMain } from 'electron'
 
 import {
@@ -12,13 +13,13 @@ import {
 
 export function registerWritebackIpc(): void {
   initializeRemoteWritebacks()
-  ipcMain.handle('writeback/list', () => listWritebackRecords())
-  ipcMain.handle('writeback/status', () => getWritebackStatusSnapshot())
-  ipcMain.handle('writeback/clear', (_event, writebackId: unknown) =>
+  handleDatabaseIpc('writeback/list', () => listWritebackRecords())
+  handleDatabaseIpc('writeback/status', () => getWritebackStatusSnapshot())
+  handleDatabaseIpc('writeback/clear', (_event, writebackId: unknown) =>
     clearWriteback(requireWritebackId(writebackId))
   )
-  ipcMain.handle('writeback/clearCompleted', () => clearCompletedWritebacks())
-  ipcMain.handle('writeback/retry', (_event, writebackId: unknown) =>
+  handleDatabaseIpc('writeback/clearCompleted', () => clearCompletedWritebacks())
+  handleDatabaseIpc('writeback/retry', (_event, writebackId: unknown) =>
     retryWriteback(requireWritebackId(writebackId))
   )
   ipcMain.on('writeback/refresh', () => broadcastWritebackChanged())

@@ -99,6 +99,13 @@ const TABLE_COLUMN_UPGRADES: Record<string, ColumnDefinition[]> = {
   ],
   onemail_message_bodies: [{ name: 'raw_source', definition: 'raw_source TEXT' }],
   onemail_message_attachments: [{ name: 'cached_content', definition: 'cached_content BLOB' }],
+  onemail_outbox_messages: [
+    {
+      name: 'delivery_uncertain',
+      definition:
+        'delivery_uncertain INTEGER NOT NULL DEFAULT 0 CHECK (delivery_uncertain IN (0, 1))'
+    }
+  ],
   onemail_pop3_messages: [
     { name: 'mail_date', definition: 'mail_date TEXT' },
     { name: 'raw_source', definition: 'raw_source TEXT' }
@@ -119,6 +126,10 @@ const TABLE_COLUMN_UPGRADES: Record<string, ColumnDefinition[]> = {
       definition: 'read_state_revision INTEGER NOT NULL DEFAULT 0 CHECK (read_state_revision >= 0)'
     },
     {
+      name: 'state_revision',
+      definition: 'state_revision INTEGER NOT NULL DEFAULT 0 CHECK (state_revision >= 0)'
+    },
+    {
       name: 'remote_missing',
       definition: 'remote_missing INTEGER NOT NULL DEFAULT 0 CHECK (remote_missing IN (0, 1))'
     },
@@ -137,6 +148,9 @@ const TABLE_COLUMN_UPGRADES: Record<string, ColumnDefinition[]> = {
 }
 
 export function upgradeSchema(db: SqliteDatabaseSync): void {
+  const needsDeliveryUpgrade = !getTableColumns(db, 'onemail_outbox_messages').has(
+    'delivery_uncertain'
+  )
   const needsRemoteMissingUpgrade = !getTableColumns(db, 'onemail_mail_messages').has(
     'remote_missing'
   )
@@ -163,6 +177,13 @@ export function upgradeSchema(db: SqliteDatabaseSync): void {
   for (const [tableName, columns] of Object.entries(TABLE_COLUMN_UPGRADES)) {
     addMissingColumns(db, tableName, columns)
   }
+  if (needsDeliveryUpgrade) {
+    db.exec("UPDATE onemail_outbox_messages SET delivery_uncertain = 1 WHERE status = 'failed'")
+  }
+  db.exec(`UPDATE onemail_outbox_messages
+    SET status = 'failed', delivery_uncertain = 1,
+        last_error = '发送过程被中断，投递结果未知，请先核对邮件是否已经送达。'
+    WHERE status = 'sending'`)
   if (needsRemoteMissingUpgrade) {
     // Older full scans hid missing UIDs using remote_deleted, without a user deletion.
     db.exec(`

@@ -72,7 +72,7 @@ OneMail uses a three-column desktop layout:
 
 The composer is a floating Gmail-like window. It can expand or restore, CC/BCC fields open on demand, and the footer contains send, formatting, attachment, link, save draft, and discard actions.
 
-Settings fill the application window, with navigation on the left, content on the right, and a back button at the top left. Sections include General, Mailbox Management, Mail Sync, Mail Sync Ranges, Notifications, Signatures, Network, Remote Content Privacy, Mail Rules, Translation, Backup, and About. Privacy and rules are edited inside settings. About includes version information, the project link, and manual update checks.
+Settings fill the application window, with navigation on the left, content on the right, and a back button at the top left. Sections include General, Mailbox Management, Mail Sync, Mail Sync Ranges, Notifications, Signatures, Network, Remote Content Privacy, Mail Rules, Translation, Backup, and About. Privacy and rules are edited inside settings. About includes version information and the project link; available updates can be downloaded on demand with progress feedback and a restart-to-update action when ready.
 
 When no account exists, you can add an account or restore a SQL backup directly.
 

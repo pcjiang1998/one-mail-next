@@ -31,6 +31,7 @@ import { z } from 'zod'
 import {
   exportSqlBackup,
   checkForAppUpdates,
+  downloadAppUpdate,
   installAppUpdate,
   loadBackupSyncSettings,
   openExternalUrl,
@@ -60,6 +61,7 @@ import { NotificationSettings } from './notification-settings'
 import { SyncRangeSettings } from './sync-range-settings'
 import { Checkbox } from '@renderer/components/ui/checkbox'
 import { Button } from '@renderer/components/ui/button'
+import { Progress } from '@renderer/components/ui/progress'
 import {
   Field,
   FieldContent,
@@ -93,7 +95,7 @@ import type {
 } from '../../../../shared/types'
 import { cn } from '@renderer/lib/utils'
 import { useI18n, type TranslationKey } from '@renderer/lib/i18n'
-import { ONEMAIL_HOMEPAGE_URL, hasAvailableUpdate } from '@renderer/lib/update-status'
+import { ONEMAIL_HOMEPAGE_URL } from '@renderer/lib/update-status'
 import type { Account } from '@renderer/components/mail/types'
 import { APP_COLOR_THEMES, APP_COLOR_THEME_SWATCHES, applyAppTheme } from '@renderer/lib/theme'
 
@@ -967,21 +969,66 @@ function AboutSettings({
   updateStatus: AppUpdateStatus | null
 }): React.JSX.Element {
   const { t } = useI18n()
-  const [updatePending, setUpdatePending] = React.useState<'check' | 'install' | null>(null)
-  const [updateError, setUpdateError] = React.useState<string | null>(null)
+  const [updatePending, setUpdatePending] = React.useState<'check' | 'download' | 'install' | null>(
+    null
+  )
+  const [updateError, setUpdateError] = React.useState<{
+    key: TranslationKey
+    status: AppUpdateStatus | null
+  } | null>(null)
   const version = systemInfo?.appVersion ? `v${systemInfo.appVersion}` : t('common.loading')
-  const hasUpdate = hasAvailableUpdate(updateStatus)
+  const downloading = updatePending === 'download' || updateStatus?.state === 'downloading'
+  const canDownload =
+    updateStatus?.state === 'available' ||
+    updateStatus?.state === 'cancelled' ||
+    (updateStatus?.state === 'error' && updateStatus.errorStage === 'download')
+  const updateAction =
+    updateStatus?.state === 'downloaded'
+      ? 'install'
+      : canDownload || downloading
+        ? 'download'
+        : 'check'
   const updateBusy =
     updatePending !== null ||
     updateStatus?.state === 'checking' ||
     updateStatus?.state === 'downloading' ||
     updateStatus?.state === 'installing'
-  const versionTitle =
-    hasUpdate && updateStatus?.latestVersion
-      ? t('settings.about.updateVersionTooltip', { version: updateStatus.latestVersion })
-      : hasUpdate
-        ? t('settings.about.updateAvailable')
-        : undefined
+  const checking = updatePending === 'check' || updateStatus?.state === 'checking'
+  const progress = updateStatus?.progress
+  const UpdateIcon = updateBusy ? LoaderCircle : updateAction === 'download' ? Download : RefreshCcw
+  const updateButtonLabel =
+    updateAction === 'install'
+      ? t('settings.about.updateRestart')
+      : updateAction === 'download'
+        ? t(downloading ? 'settings.about.updateDownloading' : 'settings.about.updateDownload')
+        : t(checking ? 'settings.about.updateChecking' : 'settings.about.updateCheck')
+
+  async function handleUpdateAction(): Promise<void> {
+    const errorKey: TranslationKey =
+      updateAction === 'download'
+        ? 'settings.about.updateDownloadFailed'
+        : updateAction === 'install'
+          ? 'settings.about.updateInstallFailed'
+          : 'settings.about.updateFailed'
+    const failure = { key: errorKey, status: updateStatus }
+    setUpdatePending(updateAction)
+    setUpdateError(null)
+    try {
+      if (updateAction === 'check') {
+        const result = await checkForAppUpdates()
+        if (result.status === 'error') setUpdateError(failure)
+      } else {
+        const succeeded = await (updateAction === 'download'
+          ? downloadAppUpdate()
+          : installAppUpdate())
+        if (!succeeded) setUpdateError(failure)
+      }
+    } catch {
+      setUpdateError(failure)
+    } finally {
+      setUpdatePending(null)
+    }
+  }
 
   return (
     <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col gap-3 p-3 sm:p-4">
@@ -991,19 +1038,7 @@ function AboutSettings({
           title="OneMail Next"
           description={
             <span>
-              {t('settings.about.versionPrefix')}{' '}
-              {hasUpdate ? (
-                <button
-                  type="button"
-                  className="rounded-sm font-medium text-warning outline-none transition-colors hover:text-warning focus-visible:ring-2 focus-visible:ring-ring"
-                  title={versionTitle}
-                  onClick={() => void openExternalUrl(ONEMAIL_HOMEPAGE_URL)}
-                >
-                  {version}
-                </button>
-              ) : (
-                <span>{version}</span>
-              )}
+              {t('settings.about.versionPrefix')} <span>{version}</span>
               {t('settings.about.versionSuffix')}
             </span>
           }
@@ -1050,65 +1085,50 @@ function AboutSettings({
         <SettingRow
           icon={RefreshCcw}
           title={t('settings.about.updateTitle')}
-          description={formatAboutUpdateStatus(updateStatus, t)}
+          description={
+            <span role="status">
+              {updateError && updateError.status === updateStatus
+                ? t(updateError.key)
+                : formatAboutUpdateStatus(updateStatus, t)}
+            </span>
+          }
           control={
-            updateStatus?.state === 'downloaded' ? (
+            <div className="flex w-full min-w-0 flex-col gap-1.5 sm:w-60">
               <Button
+                variant={updateAction === 'install' ? 'default' : 'outline'}
                 size="sm"
+                className="w-full"
                 disabled={updateBusy}
-                onClick={() => {
-                  setUpdatePending('install')
-                  setUpdateError(null)
-                  void installAppUpdate()
-                    .catch((installError) => {
-                      setUpdateError(
-                        installError instanceof Error
-                          ? installError.message
-                          : t('settings.about.updateError')
-                      )
-                    })
-                    .finally(() => setUpdatePending(null))
-                }}
+                onClick={() => void handleUpdateAction()}
               >
-                {updatePending === 'install' ? (
-                  <LoaderCircle data-icon="inline-start" className="animate-spin" />
-                ) : (
-                  <RefreshCcw data-icon="inline-start" />
-                )}
-                {t('settings.about.updateRestart')}
+                <UpdateIcon
+                  data-icon="inline-start"
+                  className={updateBusy ? 'animate-spin' : undefined}
+                />
+                {updateButtonLabel}
               </Button>
-            ) : (
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={updateBusy}
-                onClick={() => {
-                  setUpdatePending('check')
-                  setUpdateError(null)
-                  void checkForAppUpdates()
-                    .catch((checkError) => {
-                      setUpdateError(
-                        checkError instanceof Error
-                          ? checkError.message
-                          : t('settings.about.updateError')
-                      )
-                    })
-                    .finally(() => setUpdatePending(null))
-                }}
-              >
-                {updatePending === 'check' || updateStatus?.state === 'checking' ? (
-                  <LoaderCircle data-icon="inline-start" className="animate-spin" />
-                ) : (
-                  <RefreshCcw data-icon="inline-start" />
-                )}
-                {updatePending === 'check' || updateStatus?.state === 'checking'
-                  ? t('settings.about.updateChecking')
-                  : t('settings.about.updateCheck')}
-              </Button>
-            )
+              {downloading ? (
+                <>
+                  <Progress
+                    value={progress?.percent ?? 0}
+                    aria-label={t('settings.about.updateDownloading')}
+                    className="h-1.5"
+                  />
+                  <span className="text-xs leading-4 text-muted-foreground tabular-nums">
+                    {progress && progress.totalBytes > 0
+                      ? t('settings.about.updateProgress', {
+                          percent: Math.round(progress.percent),
+                          transferred: formatUpdateBytes(progress.transferredBytes),
+                          total: formatUpdateBytes(progress.totalBytes),
+                          speed: formatUpdateBytes(progress.bytesPerSecond)
+                        })
+                      : t('settings.about.updateProgressUnknown')}
+                  </span>
+                </>
+              ) : null}
+            </div>
           }
         />
-        {updateError ? <FieldError>{updateError}</FieldError> : null}
         {error ? <FieldError>{error}</FieldError> : null}
         <div className="border-t pt-3 text-xs leading-6 text-muted-foreground">
           <p>{t('settings.about.basedOn')}</p>
@@ -1170,7 +1190,16 @@ function formatAboutUpdateStatus(
   if (status.state === 'not_available') return t('settings.about.updateNotAvailable')
   if (status.state === 'unsupported') return t('settings.about.updateUnsupported')
   if (status.state === 'cancelled') return t('settings.about.updateCancelled')
+  if (status.errorStage === 'download') return t('settings.about.updateDownloadFailed')
+  if (status.errorStage === 'install') return t('settings.about.updateInstallFailed')
   return t('settings.about.updateFailed')
+}
+
+function formatUpdateBytes(bytes: number): string {
+  if (bytes < 1024) return `${Math.round(bytes)} B`
+  const units = ['B', 'KB', 'MB', 'GB']
+  const unit = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
+  return `${(bytes / 1024 ** unit).toFixed(1)} ${units[unit]}`
 }
 
 function BackupMessageView({ message }: { message: BackupMessage }): React.JSX.Element {

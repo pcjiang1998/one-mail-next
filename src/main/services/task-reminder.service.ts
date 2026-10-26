@@ -1,4 +1,5 @@
 import { BrowserWindow, Notification, powerMonitor } from 'electron'
+import { onDatabaseRestored } from '../db/activity'
 
 import type { BoardTask, BoardTaskUpdate } from '../../shared/types'
 import {
@@ -32,6 +33,12 @@ let openWindowHandler: ((route: string) => BrowserWindow | null) | null = null
 const notifications = new Map<number, NotificationAttempt>()
 const retryAfter = new Map<number, number>()
 const navigationCleanups = new Set<() => void>()
+
+onDatabaseRestored(() => {
+  if (!running) return
+  stopTaskReminderService()
+  startTaskReminderService()
+})
 
 /** The main process supplies its real main-window factory; no unhandled preload event is needed. */
 export function setTaskReminderOpenWindowHandler(

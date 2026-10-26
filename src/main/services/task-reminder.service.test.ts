@@ -66,8 +66,19 @@ import {
 } from './task-reminder.service'
 import { getSettings } from '../db/repositories/settings.repository'
 import { getAccount } from '../db/repositories/account.repository'
+import { notifyDatabaseRestored } from '../db/activity'
 
 describe('task reminder service', () => {
+  it('discards old notification callbacks when a backup replaces the database', () => {
+    electronMock.Notification.autoShow = false
+    repositoryMock.listDueReminders.mockReturnValue([dueReminder()])
+    startTaskReminderService()
+    const oldNotification = electronMock.Notification.instances[0]
+    repositoryMock.listDueReminders.mockReturnValue([])
+    notifyDatabaseRestored()
+    oldNotification.emit('show')
+    expect(repositoryMock.markReminderFired).not.toHaveBeenCalled()
+  })
   beforeEach(() => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))

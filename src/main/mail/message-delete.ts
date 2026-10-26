@@ -8,6 +8,8 @@ import {
   getMessageDeleteTarget,
   markMessageDeleteError,
   markMessageMovedToTrash,
+  markMessageMoved,
+  markMessageRemoteMissing,
   markMessageRemoteDeleted,
   restoreMessageLocally,
   markMessageUserHidden,
@@ -233,15 +235,16 @@ export async function restoreMessage(messageId: number): Promise<MessageDeleteRe
     if (!capabilities.has('MOVE')) {
       throw new Error('当前连接不支持安全的 UID MOVE，未执行恢复操作。')
     }
-    await client.uidMove(target.uid, inbox.path)
+    const movedUid = await client.uidMove(target.uid, inbox.path)
 
     remoteSucceeded = true
     markRemoteWritebackSuccess(writeback.writebackId)
-    restoreMessageLocally(messageId)
+    const destinationUid = await resolveMovedUid(client, target, inbox.path, movedUid)
+    markMessageMoved(messageId, inbox.folderId, destinationUid, false)
     return {
       messageId,
       accountId: target.accountId,
-      folderId: target.folderId,
+      folderId: inbox.folderId,
       action: 'restore',
       localOnly: false
     }
@@ -311,6 +314,10 @@ export async function moveMessageToTrash(messageId: number): Promise<MessageDele
   if (target.remoteMissing) return hideMessageLocally(messageId)
   const trash = findFolderByRole(target.accountId, 'trash')
   if (!trash) throw new Error('未找到该账号的已删除邮件文件夹。')
+  if (isTrashTarget(target)) {
+    markMessageMovedToTrash(messageId, trash.folderId, target.uid)
+    return { messageId, accountId: target.accountId, folderId: trash.folderId, action: 'trash' }
+  }
   const account = getAccount(target.accountId)
   if (!account) throw new Error(`Account not found: ${target.accountId}`)
   if (account.receiveProtocol === 'pop3') return hideMessageLocally(messageId)
@@ -344,17 +351,47 @@ export async function moveMessageToTrash(messageId: number): Promise<MessageDele
       throw new Error('当前连接不支持安全的 UID MOVE，未执行移入已删除文件夹。')
     }
     await client.selectMailbox(target.folderPath)
-    const destinationUid = await client.uidMove(target.uid, trash.path)
+    const movedUid = await client.uidMove(target.uid, trash.path)
     remoteSucceeded = true
     markRemoteWritebackSuccess(writeback.writebackId)
+    const destinationUid = await resolveMovedUid(client, target, trash.path, movedUid)
     markMessageMovedToTrash(messageId, trash.folderId, destinationUid)
     return { messageId, accountId: target.accountId, folderId: trash.folderId, action: 'trash' }
   } catch (error) {
     const message = getErrorMessage(error)
+    markMessageDeleteError(messageId, message)
     if (!remoteSucceeded) markRemoteWritebackFailed(writeback.writebackId, message)
     throw error
   } finally {
     await client?.logout().catch(() => undefined)
+  }
+}
+
+async function resolveMovedUid(
+  client: SimpleImapSession,
+  target: MessageDeleteTarget,
+  folderPath: string,
+  destinationUid: number | undefined
+): Promise<number> {
+  if (destinationUid !== undefined) return destinationUid
+  try {
+    if (!target.rfc822MessageId) throw new Error('移动后缺少可验证的 Message-ID。')
+    await client.selectMailbox(folderPath)
+    const uids = await client.searchByMessageId(target.rfc822MessageId)
+    if (uids.length !== 1) throw new Error('无法唯一定位移动后的邮件。')
+    await selectAndVerifyRemoteMessage(client, {
+      accountId: target.accountId,
+      folderId: target.folderId,
+      folderPath,
+      uid: uids[0],
+      rfc822MessageId: target.rfc822MessageId
+    })
+    return uids[0]
+  } catch (error) {
+    markMessageRemoteMissing(target.messageId)
+    throw new Error(
+      `远端移动已完成，但目标 UID 未能确认，请同步邮箱后核对。${getErrorMessage(error)}`
+    )
   }
 }
 

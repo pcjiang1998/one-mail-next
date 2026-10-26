@@ -2,6 +2,7 @@ import { app, dialog } from 'electron'
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { isUint8Array } from 'node:util/types'
+import { assertDatabaseIdle, notifyDatabaseRestored } from '../db/activity'
 import {
   closeDatabase,
   getDatabase,
@@ -275,6 +276,7 @@ function dumpDatabaseSql(exportedAt: number, { includeMail }: BackupExportOption
 }
 
 function restoreDatabaseSql(sql: string, key: string): void {
+  assertDatabaseIdle()
   const databaseDir = dirname(getDatabasePath())
   const nextDatabasePath = getDatabasePath()
   const tempDatabasePath = join(databaseDir, 'onemail.importing.sqlite')
@@ -318,6 +320,7 @@ function restoreDatabaseSql(sql: string, key: string): void {
     initializeDatabase(previousDatabasePath)
     throw error
   }
+  notifyDatabaseRestored()
 }
 
 function removeDatabaseFiles(databasePath: string): void {
@@ -418,6 +421,13 @@ function validateSqlBackup(sql: string, fileInfo: BackupFileInfo): void {
 
   if (containsDatabaseAttachmentStatement(sql)) {
     throw new Error('备份 SQL 包含不允许的数据库附加语句。')
+  }
+  if (
+    /(?:^|;)\s*(?:EXPLAIN(?:\s+QUERY\s+PLAN)?\s+)?VACUUM\b/i.test(
+      maskSqlCommentsAndQuotedContent(sql)
+    )
+  ) {
+    throw new Error('备份 SQL 包含不允许的 VACUUM 语句。')
   }
 
   if (/\bonemail_(crypto_keys|account_credentials)\b/i.test(sql)) {

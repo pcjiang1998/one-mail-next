@@ -125,7 +125,9 @@ export function OutboxPanel({
                       className="shrink-0"
                       variant={message.status === 'failed' ? 'destructive' : 'outline'}
                     >
-                      {getStatusLabel(message.status, t)}
+                      {message.deliveryUncertain
+                        ? t('mail.outbox.statusUncertain')
+                        : getStatusLabel(message.status, t)}
                     </Badge>
                   </div>
                   <div className="break-words text-xs text-muted-foreground">
@@ -144,7 +146,7 @@ export function OutboxPanel({
                       {dateFormat.format(new Date(message.updatedAt))}
                     </time>
                     <div className="ml-auto flex shrink-0 items-center gap-1">
-                      {message.status === 'failed' ? (
+                      {message.status === 'failed' && !message.deliveryUncertain ? (
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <Button

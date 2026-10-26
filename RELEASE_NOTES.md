@@ -1,5 +1,35 @@
 # OneMail Next 版本记录 / Release notes
 
+## v26.1026.2232（2026-10-26）
+
+完整累计更新说明：[v26.1026.2232](./docs/releases/v26.1026.2232.md)。升级基线为 `v26.1026.1352`，包含 `ad4dd58` 的同步范围与缓存改进，以及本次提交的安全、一致性和更新流程修复。
+
+### 中文
+
+- 新增“邮件同步范围”：元信息默认 30 天、全文默认 7 天、本地缓存保留默认 0 天；支持附件随正文缓存或单独下载，IMAP / POP3 按日期和缓存完整性补齐。
+- 新增启动时及每 24 小时的本地过期缓存清理，支持手动清理和可选元信息清理；保护近期访问、看板关联和仍被任务使用的邮件，不影响服务器邮件或用户另存的附件。
+- 修复数据库恢复与在途任务交叉写入，恢复后重建邮箱监听和提醒；加强 IPC 来源及附件文件授权，SQL 恢复禁止 `VACUUM` 文件副作用。
+- 修复 MOVE 后目标文件夹和 UID 维护、普通同步漏标记远端缺失，以及旧同步结果覆盖新已读、移动或永久删除状态。
+- 区分 SMTP 明确失败与投递结果未知；未知结果不允许直接重发。账号及文件夹配置原子提交，新邮件规则在邮件入库事务内登记，移除 1000 封登记上限。
+- 检查更新不再自动下载，发现新版后切换为“下载更新”；显示进度、大小和速度，支持失败重试，移除独立 GitHub 查询对真实更新检查失败状态的覆盖。
+- 升级包含数据库与同步设置迁移。旧失败发送记录会保守标记为投递结果未知，请先核对送达情况；建议升级前备份。
+- 本地通过 67 个测试文件、386 项测试、类型检查、生产构建及改动文件 ESLint；浏览器验证覆盖更新流程。全仓既有 lint 问题、真实邮箱故障交错和各平台安装后人工验收不在本次验证结论内。
+
+### English
+
+Cumulative update from `v26.1026.1352`, including sync/cache changes in `ad4dd58` and the reliability, security, and update-workflow fixes in this release commit.
+
+- Added independent metadata, body, and retention ranges, per-message attachment download policy, and date/cache-based IMAP and POP3 backfill.
+- Added local-only retention cleanup with protections for recent access, board-linked mail, and in-use messages; server mail and separately saved files are untouched.
+- Isolated backup restore from in-flight tasks, rebuilt watchers/reminders after restore, enforced trusted IPC frames and attachment selection authorization, and blocked `VACUUM` during SQL import.
+- Fixed MOVE identity tracking, routine remote-missing detection, and stale synchronization results overwriting newer local state.
+- Distinguished uncertain SMTP delivery from definite rejection, blocked unsafe retries, made account/folder updates atomic, and registered new-mail rules transactionally without the 1,000-message limit.
+- Separated update checks from explicit downloads, added progress/size/speed and retry controls, and removed the GitHub-release lookup that could mask updater failures.
+- Database/settings migration is automatic. Previously failed sends are conservatively marked delivery-uncertain; verify delivery before resending and back up before upgrading.
+- Passed 386 local tests in 67 files, type checks, production build, changed-file ESLint, and isolated browser checks. Existing repository lint issues, live-mailbox failure interleavings, and installed-package smoke tests remain outside this verification.
+
+---
+
 ## v26.1026.1352（2026-10-26）
 
 完整补丁与版本说明：[v26.1026.1352](./docs/releases/v26.1026.1352.md)。升级基线为 `v26.1024.1715`，应用版本为 `26.1026.1352`。

@@ -19,6 +19,14 @@ vi.mock('electron', () => ({
     })
   }
 }))
+vi.mock('./database-handler', () => ({
+  handleDatabaseIpc: (channel: string, handler: (...args: unknown[]) => unknown) => {
+    mocks.handlers.set(channel, handler)
+  }
+}))
+vi.mock('../db/connection', () => ({
+  getDatabase: () => ({ exec: vi.fn() })
+}))
 
 vi.mock('../db/repositories/account.repository', () => ({
   createAccount: vi.fn(),
@@ -53,7 +61,8 @@ vi.mock('../services/add-account-window', () => ({
 }))
 vi.mock('../services/account-mailboxes', () => ({
   discoverAccountMailFolders: vi.fn(),
-  updateAccountFolderSelection: mocks.updateAccountFolderSelection
+  prepareAccountFolderSelection: mocks.updateAccountFolderSelection,
+  commitAccountFolderSelection: vi.fn()
 }))
 
 import { registerAccountIpc } from './accounts'
@@ -81,7 +90,11 @@ describe('account update IPC', () => {
       accountId: 1,
       selectedFolderPaths: ['INBOX', 'Sent']
     })
-    expect(mocks.updateAccountFolderSelection).toHaveBeenCalledWith(1, ['INBOX', 'Sent'])
+    expect(mocks.updateAccountFolderSelection).toHaveBeenCalledWith(
+      current,
+      ['INBOX', 'Sent'],
+      undefined
+    )
     expect(mocks.refreshMailboxWatchers).toHaveBeenCalledOnce()
     expect(result).toBe(refreshed)
   })
@@ -95,7 +108,7 @@ describe('account update IPC', () => {
     const handler = mocks.handlers.get('accounts/update')
     await handler?.({}, { accountId: 1, selectedFolderPaths: [] })
 
-    expect(mocks.updateAccountFolderSelection).toHaveBeenCalledWith(1, [])
+    expect(mocks.updateAccountFolderSelection).toHaveBeenCalledWith(account, [], undefined)
   })
 })
 

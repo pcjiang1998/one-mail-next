@@ -1,13 +1,11 @@
 import { getDatabase, toNumber, toOptionalString } from '../connection'
+import { withDatabaseTask } from '../activity'
 import type { SyncStatus } from '../../ipc/types'
 import { syncAccountMailbox, type AccountMailboxSyncMode } from '../../mail/imap-sync'
 import { isImapAuthErrorMessage, isImapNetworkErrorMessage } from '../../mail/imap-errors'
 import { getAccount } from './account.repository'
 import { syncPop3Account } from '../../mail/pop3-sync'
-import {
-  enqueueMailRulesForNewMessages,
-  processPendingMailRules
-} from '../../services/mail-rule.service'
+import { processPendingMailRules } from '../../services/mail-rule.service'
 
 type SyncRunRow = {
   account_id: number | null
@@ -32,11 +30,13 @@ export function syncAccountNow(
   const existingSync = activeAccountSyncs.get(accountId)
   if (existingSync) return existingSync
 
-  const syncPromise = syncSingleAccount(accountId, mode, startedAt).finally(() => {
-    if (activeAccountSyncs.get(accountId) === syncPromise) {
-      activeAccountSyncs.delete(accountId)
+  const syncPromise = withDatabaseTask(() => syncSingleAccount(accountId, mode, startedAt)).finally(
+    () => {
+      if (activeAccountSyncs.get(accountId) === syncPromise) {
+        activeAccountSyncs.delete(accountId)
+      }
     }
-  })
+  )
   activeAccountSyncs.set(accountId, syncPromise)
 
   return syncPromise
@@ -82,22 +82,6 @@ function markStaleRunningSyncsFailed(): void {
     .run()
 }
 
-function listNewInboxMessageIds(accountId: number, startedAt: string): number[] {
-  return getDatabase()
-    .prepare<{ message_id: number }>(
-      `SELECT m.message_id
-       FROM onemail_mail_messages m
-       JOIN onemail_mail_folders f ON f.folder_id = m.folder_id
-       WHERE m.account_id = :accountId
-         AND f.role = 'inbox'
-         AND m.created_at >= :startedAt
-         AND m.sync_backfill = 0
-       ORDER BY m.message_id`
-    )
-    .all({ accountId, startedAt })
-    .map((row) => toNumber(row.message_id))
-}
-
 async function syncSingleAccount(
   accountId: number,
   mode: AccountMailboxSyncMode,
@@ -127,16 +111,16 @@ async function syncSingleAccount(
     if (!account) throw new Error(`Account not found: ${accountId}`)
     const stats =
       account.receiveProtocol === 'pop3'
-        ? await syncPop3Account(accountId)
+        ? await syncPop3Account(accountId, mode === 'initial')
         : await syncAccountMailbox(accountId, mode)
 
+    // Historical post-sync admission contract (now applied inside protocol transactions):
     // The protocol-specific sync has committed its message writes at this point. Use the
     // insertion timestamp as a conservative admission boundary so rules never scan history or
     // re-run on ordinary header updates. Initial sync is explicitly skipped by the rule engine.
     // Range backfills have their own marker and cannot enter the new-message rule queue.
+    // Admission now commits inside each protocol's insertion transaction.
     try {
-      const newMessageIds = listNewInboxMessageIds(accountId, startedAt)
-      enqueueMailRulesForNewMessages(newMessageIds, { initialSync: mode === 'initial' })
       void processPendingMailRules().catch((error) =>
         console.error('处理新邮件规则失败；邮件同步结果仍保留。', error)
       )

@@ -1,4 +1,5 @@
 import { getAccount } from '../db/repositories/account.repository'
+import { withDatabaseTask } from '../db/activity'
 import { getDatabase, toNumber, toOptionalString, type SqliteRow } from '../db/connection'
 import {
   createMessageOperation,
@@ -67,6 +68,7 @@ export type SmtpSendResult = ComposedMessage & {
 
 type SmtpDeliveryInput = SmtpSendInput & {
   rawMime: string
+  onDeliveryStarted: () => void
 }
 
 type SmtpAccountRow = SqliteRow & {
@@ -105,7 +107,11 @@ type SmtpTransport = {
   }>
 }
 
-export async function sendPlainTextEmail(input: SmtpSendInput): Promise<SmtpSendResult> {
+export function sendPlainTextEmail(input: SmtpSendInput): Promise<SmtpSendResult> {
+  return withDatabaseTask(() => sendPlainTextEmailCore(input))
+}
+
+async function sendPlainTextEmailCore(input: SmtpSendInput): Promise<SmtpSendResult> {
   const from = resolveFromAddress(input.accountId, input.from)
   const attachments = await materializeForwardedAttachments(input.attachments)
   const composed = composePlainTextMessage({ ...input, attachments, from })
@@ -129,6 +135,7 @@ export async function sendPlainTextEmail(input: SmtpSendInput): Promise<SmtpSend
         attachments,
         rawMime: composed.rawMime
       })
+  markOutboxSending(outbox.outboxId)
   const operation = createMessageOperation({
     accountId: input.accountId,
     messageId: input.relatedMessageId,
@@ -158,14 +165,26 @@ export async function sendPlainTextEmail(input: SmtpSendInput): Promise<SmtpSend
   }
 
   let sent: { envelopeId?: string }
+  let deliveryStarted = false
   try {
-    sent = await deliverRawEmail({ ...input, rawMime: composed.rawMime, from })
+    sent = await deliverRawEmail({
+      ...input,
+      rawMime: composed.rawMime,
+      from,
+      onDeliveryStarted: () => {
+        deliveryStarted = true
+      }
+    })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
+    const uncertain = deliveryStarted && !isDefiniteSmtpRejection(error)
+    const failure = uncertain
+      ? `SMTP 投递结果未知，邮件可能已经送达。请先核对收件方或已发送邮件，不能直接重试。${message}`
+      : message
     if (sendWriteback) markRemoteWritebackFailed(sendWriteback.writebackId, message)
-    markOutboxFailed(outbox.outboxId, message)
-    updateMessageOperationStatus(operation.operationId, 'failed', message)
-    throw error
+    markOutboxFailed(outbox.outboxId, failure, uncertain)
+    updateMessageOperationStatus(operation.operationId, 'failed', failure)
+    throw new Error(failure)
   }
 
   // SMTP accepted the message. From this point onward no bookkeeping or IMAP
@@ -219,6 +238,8 @@ export async function sendPlainTextEmail(input: SmtpSendInput): Promise<SmtpSend
 export async function retryOutboxEmail(outboxId: number): Promise<SmtpSendResult> {
   const outbox = getOutboxRecord(outboxId)
   if (!outbox) throw new Error('发送记录不存在。')
+  if (outbox.deliveryUncertain)
+    throw new Error('SMTP 投递结果未知，不能直接重试，请先核对邮件是否已经送达。')
   if (outbox.status === 'sending') throw new Error('邮件仍在发送中。')
   if (outbox.status === 'sent') throw new Error('邮件已经发送成功。')
   if (outbox.status === 'deleted') throw new Error('发送记录已删除。')
@@ -245,6 +266,7 @@ export async function retryOutboxEmail(outboxId: number): Promise<SmtpSendResult
 function prepareExistingOutbox(outboxId: number, accountId: number): { outboxId: number } {
   const existing = getOutboxRecord(outboxId)
   if (!existing) throw new Error('发送记录不存在。')
+  if (existing.deliveryUncertain) throw new Error('SMTP 投递结果未知，不能重新发送此记录。')
   if (existing.accountId !== accountId) throw new Error('发送记录与账号不匹配。')
   if (existing.status === 'sending') throw new Error('邮件仍在发送中。')
   if (existing.status === 'sent') throw new Error('邮件已经发送成功。')
@@ -273,9 +295,15 @@ async function deliverRawEmail(input: SmtpDeliveryInput): Promise<{ envelopeId?:
   let result: Awaited<ReturnType<SmtpTransport['sendMail']>>
 
   try {
-    result = await createSmtpTransport(nodemailer, smtpConfig, auth, account).sendMail(message)
+    const transport = createSmtpTransport(nodemailer, smtpConfig, auth, account)
+    input.onDeliveryStarted()
+    result = await transport.sendMail(message)
   } catch (error) {
-    if (!isOAuthSmtpAuthError(error) || getSmtpAuthType(account, smtpAccount) !== 'oauth2') {
+    if (
+      !isOAuthSmtpAuthError(error) ||
+      !isDefiniteSmtpRejection(error) ||
+      getSmtpAuthType(account, smtpAccount) !== 'oauth2'
+    ) {
       throw error
     }
 
@@ -288,6 +316,18 @@ async function deliverRawEmail(input: SmtpDeliveryInput): Promise<{ envelopeId?:
   return {
     envelopeId: result.messageId ?? result.response
   }
+}
+
+export function isDefiniteSmtpRejection(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  const smtp = error as Error & { responseCode?: number; code?: string; command?: string }
+  if (smtp.responseCode !== undefined && smtp.responseCode >= 400 && smtp.responseCode <= 599)
+    return true
+  if (smtp.code === 'EAUTH' || smtp.code === 'EENVELOPE') return true
+  return (
+    smtp.command !== undefined &&
+    /^(?:CONN|EHLO|HELO|STARTTLS|AUTH(?:\s|$)|MAIL FROM|RCPT TO)/i.test(smtp.command)
+  )
 }
 
 function createSmtpTransport(

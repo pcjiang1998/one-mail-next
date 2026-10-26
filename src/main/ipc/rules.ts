@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron'
+import { handleDatabaseIpc } from './database-handler'
 
 import {
   deleteRule,
@@ -9,11 +9,11 @@ import {
 } from '../services/mail-rule.service'
 
 export function registerRulesIpc(): void {
-  ipcMain.handle('rules/list', () => getMailRules())
-  ipcMain.handle('rules/save', (_event, input: unknown) => saveRule(input))
-  ipcMain.handle('rules/delete', (_event, ruleId: unknown) => deleteRule(ruleId))
-  ipcMain.handle('rules/reorder', (_event, ruleIds: unknown) => reorderRules(ruleIds))
-  ipcMain.handle('rules/setEnabled', (_event, ruleId: unknown, enabled: unknown) =>
+  handleDatabaseIpc('rules/list', () => getMailRules())
+  handleDatabaseIpc('rules/save', (_event, input: unknown) => saveRule(input))
+  handleDatabaseIpc('rules/delete', (_event, ruleId: unknown) => deleteRule(ruleId))
+  handleDatabaseIpc('rules/reorder', (_event, ruleIds: unknown) => reorderRules(ruleIds))
+  handleDatabaseIpc('rules/setEnabled', (_event, ruleId: unknown, enabled: unknown) =>
     setRuleEnabled(ruleId, enabled)
   )
 }

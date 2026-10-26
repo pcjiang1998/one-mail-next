@@ -163,6 +163,7 @@ const api = {
   },
   updates: {
     check: () => ipcRenderer.invoke('updates/check'),
+    download: () => ipcRenderer.invoke('updates/download'),
     status: () => ipcRenderer.invoke('updates/status'),
     install: () => ipcRenderer.invoke('updates/install'),
     onStatus: (callback): (() => void) => {

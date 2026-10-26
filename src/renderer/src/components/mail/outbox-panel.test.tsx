@@ -8,6 +8,22 @@ import { OutboxPanel } from './outbox-panel'
 import type { OutboxMessage } from '@renderer/lib/api'
 
 describe('OutboxPanel refresh', () => {
+  it('labels unknown delivery and does not offer ordinary retry', () => {
+    const message = { ...createMessages()[2], deliveryUncertain: true }
+    render(
+      <I18nProvider>
+        <OutboxPanel
+          outboxMessages={[message]}
+          onRefresh={vi.fn()}
+          onRetry={vi.fn()}
+          onDelete={vi.fn()}
+          onClear={vi.fn()}
+        />
+      </I18nProvider>
+    )
+    expect(screen.getByText('投递结果未知')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '重试' })).not.toBeInTheDocument()
+  })
   it.each([
     ['清除已发送', 'sent'],
     ['清除失败', 'failed']

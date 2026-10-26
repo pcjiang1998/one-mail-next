@@ -1,4 +1,5 @@
 import type { MailRuleAction } from '../../shared/types'
+import { withDatabaseTask } from '../db/activity'
 import {
   commitMailRuleLocalAction,
   enqueueMailRuleExecutions,
@@ -42,12 +43,8 @@ export function enqueueMailRulesForNewMessages(
   if (!options || typeof options.initialSync !== 'boolean') {
     throw new Error('新邮件规则必须显式指定是否首次同步。')
   }
-  if (
-    !Array.isArray(messageIds) ||
-    messageIds.length > 1000 ||
-    messageIds.some((id) => !Number.isSafeInteger(id) || id <= 0)
-  ) {
-    throw new Error('新邮件规则 ID 列表无效或超过 1000 条。')
+  if (!Array.isArray(messageIds) || messageIds.some((id) => !Number.isSafeInteger(id) || id <= 0)) {
+    throw new Error('新邮件规则 ID 列表无效。')
   }
   if (options.initialSync || messageIds.length === 0) return 0
   return enqueueMailRuleExecutions(messageIds)
@@ -56,7 +53,7 @@ export function enqueueMailRulesForNewMessages(
 /** One serialized runner per main process; durable checkpoints survive process restarts. */
 export function processPendingMailRules(): Promise<MailRuleRunResult> {
   if (running) return running
-  running = drainPendingRules().finally(() => {
+  running = withDatabaseTask(drainPendingRules).finally(() => {
     running = undefined
   })
   return running

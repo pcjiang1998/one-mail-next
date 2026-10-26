@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron'
+import { handleDatabaseIpc } from './database-handler'
 
 import {
   getTranslationSettings,
@@ -8,11 +8,11 @@ import { translateMailText } from '../services/mail-translation'
 import type { TranslationRequest, TranslationSettings } from './types'
 
 export function registerTranslationIpc(): void {
-  ipcMain.handle('translations/getSettings', () => getTranslationSettings())
-  ipcMain.handle('translations/updateSettings', (_event, input: TranslationSettings) =>
+  handleDatabaseIpc('translations/getSettings', () => getTranslationSettings())
+  handleDatabaseIpc('translations/updateSettings', (_event, input: TranslationSettings) =>
     updateTranslationSettings(input)
   )
-  ipcMain.handle('translations/translate', (_event, input: TranslationRequest) =>
+  handleDatabaseIpc('translations/translate', (_event, input: TranslationRequest) =>
     translateMailText(input)
   )
 }

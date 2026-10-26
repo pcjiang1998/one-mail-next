@@ -1,4 +1,6 @@
-import { BrowserWindow, ipcMain } from 'electron'
+import { handleDatabaseIpc } from './database-handler'
+import { BrowserWindow } from 'electron'
+import { getDatabase } from '../db/connection'
 import {
   createAccount,
   disableAccount,
@@ -26,23 +28,25 @@ import { authorizeMicrosoftAccount, saveMicrosoftAuthorization } from '../servic
 import { closeAddAccountWindow, openAddAccountWindow } from '../services/add-account-window'
 import {
   discoverAccountMailFolders,
-  updateAccountFolderSelection
+  prepareAccountFolderSelection,
+  commitAccountFolderSelection,
+  type PreparedFolderSelection
 } from '../services/account-mailboxes'
 
 export function registerAccountIpc(): void {
-  ipcMain.handle('accounts/list', () => listAccounts())
-  ipcMain.handle('accounts/setNotifications', (_event, input: AccountNotificationsInput) =>
+  handleDatabaseIpc('accounts/list', () => listAccounts())
+  handleDatabaseIpc('accounts/setNotifications', (_event, input: AccountNotificationsInput) =>
     setAccountNotifications(input)
   )
-  ipcMain.handle('accounts/openAddWindow', () => {
+  handleDatabaseIpc('accounts/openAddWindow', () => {
     openAddAccountWindow()
     return true
   })
-  ipcMain.handle('accounts/closeAddWindow', () => {
+  handleDatabaseIpc('accounts/closeAddWindow', () => {
     closeAddAccountWindow()
     return true
   })
-  ipcMain.handle('accounts/create', async (_event, input: AccountCreateInput) => {
+  handleDatabaseIpc('accounts/create', async (_event, input: AccountCreateInput) => {
     let nextInput = input
     let oauthToken: Awaited<ReturnType<typeof authorizeMicrosoftAccount>>['token'] | undefined
     let idleSupported: boolean | undefined
@@ -83,10 +87,10 @@ export function registerAccountIpc(): void {
       throw error
     }
   })
-  ipcMain.handle('accounts/discoverFolders', (_event, accountId: number) => {
+  handleDatabaseIpc('accounts/discoverFolders', (_event, accountId: number) => {
     return discoverAccountMailFolders(accountId)
   })
-  ipcMain.handle('accounts/update', async (_event, input: AccountUpdateInput) => {
+  handleDatabaseIpc('accounts/update', async (_event, input: AccountUpdateInput) => {
     const current = getAccount(input.accountId)
     if (!current) {
       throw new Error(`Account not found: ${input.accountId}`)
@@ -97,19 +101,16 @@ export function registerAccountIpc(): void {
     }
 
     if (!requiresConnectionTest(input)) {
-      const account = updateAccount(input)
-      if (input.selectedFolderPaths) {
-        await updateAccountFolderSelection(account.accountId, input.selectedFolderPaths)
-      }
+      const selection = await prepareUpdatedFolders(input, current)
+      const account = commitAccountUpdate(input, selection)
       refreshMailboxWatchers()
       return getAccount(account.accountId) ?? account
     }
 
     if (current.authType === 'oauth2' || input.authType === 'oauth2') {
-      const account = updateAccount(normalizeOAuthAccountUpdate(input, current))
-      if (input.selectedFolderPaths) {
-        await updateAccountFolderSelection(account.accountId, input.selectedFolderPaths)
-      }
+      const normalized = normalizeOAuthAccountUpdate(input, current)
+      const selection = await prepareUpdatedFolders(normalized, current)
+      const account = commitAccountUpdate(normalized, selection)
       refreshMailboxWatchers()
       return getAccount(account.accountId) ?? account
     }
@@ -141,18 +142,12 @@ export function registerAccountIpc(): void {
         ? await testPop3Connection(connectionInput).then(() => false)
         : await testImapConnection(connectionInput)
 
-    const account = updateAccount(input)
-    updateAccountIdleSupport(account.accountId, idleSupported)
-    if (input.password) {
-      saveAccountPassword(account.accountId, connectionInput)
-    }
-    if (input.selectedFolderPaths) {
-      await updateAccountFolderSelection(account.accountId, input.selectedFolderPaths)
-    }
+    const selection = await prepareUpdatedFolders(input, current, password)
+    const account = commitAccountUpdate(input, selection, idleSupported, connectionInput)
     refreshMailboxWatchers()
     return getAccount(account.accountId) ?? account
   })
-  ipcMain.handle('accounts/reauthorize', async (_event, accountId: number) => {
+  handleDatabaseIpc('accounts/reauthorize', async (_event, accountId: number) => {
     const current = getAccount(accountId)
     if (!current) {
       throw new Error(`Account not found: ${accountId}`)
@@ -171,28 +166,71 @@ export function registerAccountIpc(): void {
     refreshMailboxWatchers()
     return account
   })
-  ipcMain.handle('accounts/disable', (_event, accountId: number) => {
+  handleDatabaseIpc('accounts/disable', (_event, accountId: number) => {
     const account = disableAccount(accountId)
     refreshMailboxWatchers()
     return account
   })
-  ipcMain.handle('accounts/remove', (_event, accountId: number) => {
+  handleDatabaseIpc('accounts/remove', (_event, accountId: number) => {
     const removed = removeAccount(accountId)
     refreshMailboxWatchers()
     return removed
   })
-  ipcMain.handle('accounts/removeMany', (_event, input: AccountOrderInput) => {
+  handleDatabaseIpc('accounts/removeMany', (_event, input: AccountOrderInput) => {
     if (!input || !Array.isArray(input.accountIds)) throw new Error('邮箱 ID 列表无效。')
     const removedAccountIds = removeAccounts(input.accountIds)
     refreshMailboxWatchers()
     return { removedAccountIds }
   })
-  ipcMain.handle('accounts/reorder', (_event, input: AccountOrderInput) => {
+  handleDatabaseIpc('accounts/reorder', (_event, input: AccountOrderInput) => {
     if (!input || !Array.isArray(input.accountIds)) throw new Error('邮箱 ID 列表无效。')
     const accounts = reorderAccounts(input.accountIds)
     refreshMailboxWatchers()
     return accounts
   })
+}
+
+async function prepareUpdatedFolders(
+  input: AccountUpdateInput,
+  current: NonNullable<ReturnType<typeof getAccount>>,
+  password?: string
+): Promise<PreparedFolderSelection | undefined> {
+  if (!input.selectedFolderPaths || current.receiveProtocol === 'pop3') return undefined
+  return prepareAccountFolderSelection(
+    {
+      ...current,
+      authType: input.authType ?? current.authType,
+      imapHost: input.imapHost ?? current.imapHost,
+      imapPort: input.imapPort ?? current.imapPort,
+      imapSecurity: input.imapSecurity ?? current.imapSecurity,
+      proxyMode: input.proxyMode ?? current.proxyMode,
+      customProxyUrl: input.customProxyUrl ?? current.customProxyUrl
+    },
+    input.selectedFolderPaths,
+    password
+  )
+}
+
+function commitAccountUpdate(
+  input: AccountUpdateInput,
+  selection?: PreparedFolderSelection,
+  idleSupported?: boolean,
+  connectionInput?: AccountCreateInput
+): ReturnType<typeof updateAccount> {
+  const db = getDatabase()
+  db.exec('SAVEPOINT account_update')
+  try {
+    const account = updateAccount(input)
+    if (idleSupported !== undefined) updateAccountIdleSupport(account.accountId, idleSupported)
+    if (input.password && connectionInput) saveAccountPassword(account.accountId, connectionInput)
+    if (selection) commitAccountFolderSelection(selection)
+    db.exec('RELEASE account_update')
+    return account
+  } catch (error) {
+    db.exec('ROLLBACK TO account_update')
+    db.exec('RELEASE account_update')
+    throw error
+  }
 }
 
 function requiresConnectionTest(input: AccountUpdateInput): boolean {

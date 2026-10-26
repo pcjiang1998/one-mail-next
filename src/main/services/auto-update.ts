@@ -13,8 +13,6 @@ const UPDATE_CHECK_INTERVAL_MS: Record<Exclude<UpdateCheckFrequency, 'manual'>, 
   daily: 1000 * 60 * 60 * 24,
   weekly: 1000 * 60 * 60 * 24 * 7
 }
-const GITHUB_LATEST_RELEASE_API_URL =
-  'https://api.github.com/repos/pcjiang1998/one-mail-next/releases/latest'
 const PACKAGED_APP_UPDATE_UNSUPPORTED_MESSAGE =
   '当前运行环境暂不支持自动检查更新，请使用已打包的正式版本。'
 const MAC_CODE_SIGN_UPDATE_UNSUPPORTED_MESSAGE =
@@ -24,17 +22,11 @@ let updateCheckTimer: NodeJS.Timeout | undefined
 let autoUpdaterErrorHandlerInstalled = false
 let macAutoUpdateSigningSupported: boolean | undefined
 let lastUpdateStatus: AppUpdateStatus | null = null
-let githubReleaseCheckPromise: Promise<void> | undefined
-
-type GitHubLatestRelease = {
-  tag_name?: string
-  name?: string
-  html_url?: string
-}
 
 function getAutoUpdater(): AppUpdater | null {
   try {
     const { autoUpdater } = electronUpdater
+    autoUpdater.autoDownload = false
     return autoUpdater
   } catch (error) {
     logUpdateError(error)
@@ -42,27 +34,12 @@ function getAutoUpdater(): AppUpdater | null {
   }
 }
 
-function shouldCheckForUpdates(): boolean {
-  return getUpdateUnsupportedMessage() === null
-}
-
 export function startAutoUpdateChecks(frequency: UpdateCheckFrequency): void {
   stopAutoUpdateChecks()
   if (frequency === 'manual') return
 
-  const autoUpdater = shouldCheckForUpdates() ? getAutoUpdater() : null
-  if (autoUpdater) installAutoUpdaterErrorHandler(autoUpdater)
-
   const checkForUpdates = (): void => {
-    checkGitHubReleaseForUpdates()
-    if (autoUpdater) {
-      void autoUpdater
-        .checkForUpdates()
-        .then((result) => result?.downloadPromise?.catch(() => undefined))
-        .catch((error) => {
-          logUpdateError(error)
-        })
-    }
+    void checkForAppUpdates()
   }
 
   checkForUpdates()
@@ -78,32 +55,22 @@ export function stopAutoUpdateChecks(): void {
   updateCheckTimer = undefined
 }
 
-export function checkGitHubReleaseForUpdates(): void {
-  if (githubReleaseCheckPromise) return
-
-  githubReleaseCheckPromise = fetchLatestGitHubRelease()
-    .then((release) => {
-      const latestVersion =
-        extractVersion(release.tag_name) ?? extractVersion(release.name) ?? undefined
-      if (!latestVersion || compareVersions(latestVersion, app.getVersion()) <= 0) return
-
-      updateStatus(getVisibleUpdateState(), {
-        latestVersion,
-        releaseUrl: release.html_url,
-        message: `发现新版本 v${latestVersion}。`,
-        progress: lastUpdateStatus?.progress
-      })
-    })
-    .catch((error) => {
-      console.warn('Failed to check GitHub releases for updates', error)
-    })
-    .finally(() => {
-      githubReleaseCheckPromise = undefined
-    })
-}
-
 export async function checkForAppUpdates(): Promise<AppUpdateCheckResult> {
   const currentVersion = app.getVersion()
+  const currentStatus = getAppUpdateStatus()
+  if (
+    currentStatus.state === 'downloading' ||
+    currentStatus.state === 'downloaded' ||
+    currentStatus.state === 'installing'
+  ) {
+    return {
+      status: 'available',
+      currentVersion,
+      latestVersion: currentStatus.latestVersion,
+      message: currentStatus.message
+    }
+  }
+
   const unsupportedMessage = getUpdateUnsupportedMessage()
 
   if (unsupportedMessage) {
@@ -128,28 +95,33 @@ export async function checkForAppUpdates(): Promise<AppUpdateCheckResult> {
   }
   installAutoUpdaterErrorHandler(autoUpdater)
 
+  updateStatus('checking', { message: '正在检查更新。' })
   try {
     const result = await autoUpdater.checkForUpdates()
     const latestVersion = result?.updateInfo.version
 
     if (!result?.isUpdateAvailable || !latestVersion || latestVersion === currentVersion) {
+      const status = updateStatus('not_available', {
+        latestVersion,
+        message: '当前已是最新版本。'
+      })
       return {
         status: 'not_available',
         currentVersion,
         latestVersion,
-        message: '当前已是最新版本。'
+        message: status.message
       }
     }
 
-    if (result.downloadPromise) {
-      result.downloadPromise.catch(() => undefined)
-    }
-
+    const status = updateStatus('available', {
+      latestVersion,
+      message: `发现新版本 v${latestVersion}。`
+    })
     return {
       status: 'available',
       currentVersion,
       latestVersion,
-      message: `发现新版本 v${latestVersion}，正在自动下载。`
+      message: status.message
     }
   } catch (error) {
     logUpdateError(error)
@@ -158,6 +130,35 @@ export async function checkForAppUpdates(): Promise<AppUpdateCheckResult> {
       currentVersion,
       message: getUpdateErrorMessage(error)
     }
+  }
+}
+
+export async function downloadAppUpdate(): Promise<boolean> {
+  const status = getAppUpdateStatus()
+  if (status.state === 'downloading' || status.state === 'downloaded') return true
+  if (
+    status.state !== 'available' &&
+    status.state !== 'cancelled' &&
+    !(status.state === 'error' && status.errorStage === 'download')
+  ) {
+    return false
+  }
+
+  const autoUpdater = getAutoUpdater()
+  if (!autoUpdater) return false
+  installAutoUpdaterErrorHandler(autoUpdater)
+
+  updateStatus('downloading', {
+    latestVersion: status.latestVersion,
+    message: `正在下载 v${status.latestVersion}。`,
+    progress: { percent: 0, transferredBytes: 0, totalBytes: 0, bytesPerSecond: 0 }
+  })
+  try {
+    await autoUpdater.downloadUpdate()
+    return true
+  } catch (error) {
+    logUpdateError(error, 'download')
+    return false
   }
 }
 
@@ -232,14 +233,23 @@ function installAutoUpdaterErrorHandler(autoUpdater: AppUpdater): void {
   if (autoUpdaterErrorHandlerInstalled) return
   autoUpdaterErrorHandlerInstalled = true
 
-  autoUpdater.on('error', logUpdateError)
+  autoUpdater.on('error', (error) => {
+    const status = getAppUpdateStatus()
+    const stage =
+      status.state === 'downloading'
+        ? 'download'
+        : status.state === 'installing'
+          ? 'install'
+          : status.errorStage
+    logUpdateError(error, stage)
+  })
   autoUpdater.on('checking-for-update', () => {
     updateStatus('checking', { message: '正在检查更新。' })
   })
   autoUpdater.on('update-available', (info) => {
     updateStatus('available', {
       latestVersion: info.version,
-      message: `发现新版本 v${info.version}，正在自动下载。`
+      message: `发现新版本 v${info.version}。`
     })
   })
   autoUpdater.on('download-progress', (progress) => {
@@ -271,15 +281,16 @@ function installAutoUpdaterErrorHandler(autoUpdater: AppUpdater): void {
   })
 }
 
-function logUpdateError(error: unknown): void {
+function logUpdateError(error: unknown, errorStage: AppUpdateStatus['errorStage'] = 'check'): void {
+  updateStatus('error', {
+    message: getUpdateErrorMessage(error),
+    errorStage
+  })
   if (isBoringSslBadDecryptError(error)) {
     console.warn('Ignored BoringSSL BAD_DECRYPT while checking for updates.')
     return
   }
 
-  updateStatus('error', {
-    message: getUpdateErrorMessage(error)
-  })
   console.error('Failed to check for updates', error)
 }
 
@@ -317,62 +328,9 @@ function createUpdateStatus(
     releaseUrl: input.releaseUrl ?? lastUpdateStatus?.releaseUrl,
     message: input.message ?? lastUpdateStatus?.message ?? '',
     progress: input.progress,
+    errorStage: input.errorStage,
     updatedAt: new Date().toISOString()
   }
-}
-
-async function fetchLatestGitHubRelease(): Promise<GitHubLatestRelease> {
-  const response = await fetch(GITHUB_LATEST_RELEASE_API_URL, {
-    headers: {
-      accept: 'application/vnd.github+json',
-      'user-agent': `OneMail/${app.getVersion()}`
-    }
-  })
-
-  if (!response.ok) {
-    throw new Error(`GitHub Release 检查失败：HTTP ${response.status}`)
-  }
-
-  return (await response.json()) as GitHubLatestRelease
-}
-
-function getVisibleUpdateState(): AppUpdateStatus['state'] {
-  if (
-    lastUpdateStatus?.state === 'downloading' ||
-    lastUpdateStatus?.state === 'downloaded' ||
-    lastUpdateStatus?.state === 'installing'
-  ) {
-    return lastUpdateStatus.state
-  }
-
-  return 'available'
-}
-
-function extractVersion(value?: string): string | undefined {
-  const match = value?.trim().match(/(?:^|[^\d])v?(\d+(?:\.\d+)*)(?:[-+][0-9a-z.-]+)?(?:$|[^\d])/i)
-  return match?.[1]
-}
-
-function compareVersions(first: string, second: string): number {
-  const firstParts = parseVersionParts(first)
-  const secondParts = parseVersionParts(second)
-  const maxLength = Math.max(firstParts.length, secondParts.length)
-
-  for (let index = 0; index < maxLength; index += 1) {
-    const firstPart = firstParts[index] ?? 0
-    const secondPart = secondParts[index] ?? 0
-    if (firstPart !== secondPart) return firstPart > secondPart ? 1 : -1
-  }
-
-  return 0
-}
-
-function parseVersionParts(value: string): number[] {
-  return value
-    .replace(/^v/i, '')
-    .split('.')
-    .map((part) => Number(part))
-    .filter((part) => Number.isSafeInteger(part))
 }
 
 function broadcastUpdateStatus(status: AppUpdateStatus): void {

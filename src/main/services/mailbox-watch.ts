@@ -1,4 +1,5 @@
 import { networkInterfaces } from 'node:os'
+import { onDatabaseRestored, withDatabaseTask } from '../db/activity'
 import { BrowserWindow, net, powerMonitor } from 'electron'
 import {
   listAccounts,
@@ -90,6 +91,7 @@ let lastNetworkSignature = ''
 export function startMailboxWatchers(): void {
   if (initialized) return
   initialized = true
+  onDatabaseRestored(restartMailboxWatchers)
   startNetworkChangeWatch()
   refreshMailboxWatchers()
   refreshForegroundSyncTimer()
@@ -170,7 +172,7 @@ export function stopMailboxWatchers(): void {
   }
 }
 
-function restartMailboxWatchers(): void {
+export function restartMailboxWatchers(): void {
   for (const accountId of tasks.keys()) {
     stopMailboxWatcher(accountId)
   }
@@ -195,9 +197,23 @@ async function runMailboxWatcher(task: WatchTask): Promise<void> {
         return
       }
 
-      const session = await scheduleImapTask(account.imapHost, PRIORITY_WATCH_CONNECT, () => {
+      const { session, capabilities } = await withDatabaseTask(async () => {
+        const session = await scheduleImapTask(account.imapHost, PRIORITY_WATCH_CONNECT, () => {
+          if (task.stopped) throw new Error('邮箱监听已停止。')
+          return ImapIdleSession.connect(account)
+        })
+        task.session = session
+        await authenticateImapSession(account, session)
+        const capabilities = await session.capabilities().catch(() => new Set<string>())
         if (task.stopped) throw new Error('邮箱监听已停止。')
-        return ImapIdleSession.connect(account)
+        updateAccountIdleSupport(account.accountId, capabilities.has('IDLE'))
+        task.watchMailboxes = await listWatchMailboxes(session)
+        task.lastStatuses = await readMailboxStatuses(
+          session,
+          task.watchMailboxes,
+          task.lastStatuses
+        )
+        return { session, capabilities }
       })
       if (task.stopped) {
         await session.logout().catch(() => undefined)
@@ -206,11 +222,6 @@ async function runMailboxWatcher(task: WatchTask): Promise<void> {
       task.session = session
       task.retryCount = 0
 
-      await authenticateImapSession(account, session)
-      const capabilities = await session.capabilities().catch(() => new Set<string>())
-      updateAccountIdleSupport(account.accountId, capabilities.has('IDLE'))
-      task.watchMailboxes = await listWatchMailboxes(session)
-      task.lastStatuses = await readMailboxStatuses(session, task.watchMailboxes, task.lastStatuses)
       task.failureCount = 0
 
       if (capabilities.has('IDLE')) {

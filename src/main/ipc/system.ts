@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { handleDatabaseIpc } from './database-handler'
+import { app, BrowserWindow, shell } from 'electron'
 import { getDatabasePath } from '../db/connection'
 import { takePendingMailtoRequests } from '../services/mailto'
 import {
@@ -13,7 +14,7 @@ const TITLE_BAR_SYMBOL_COLORS: Record<AppTheme, string> = {
 }
 
 export function registerSystemIpc(): void {
-  ipcMain.handle('system/info', (): SystemInfo => {
+  handleDatabaseIpc('system/info', (): SystemInfo => {
     return {
       platform: process.platform,
       appVersion: app.getVersion(),
@@ -22,7 +23,7 @@ export function registerSystemIpc(): void {
     }
   })
 
-  ipcMain.handle('system/setTitleBarTheme', (event, theme: unknown): boolean => {
+  handleDatabaseIpc('system/setTitleBarTheme', (event, theme: unknown): boolean => {
     if (process.platform !== 'win32' || (theme !== 'light' && theme !== 'dark')) return false
 
     const window = BrowserWindow.fromWebContents(event.sender)
@@ -36,20 +37,20 @@ export function registerSystemIpc(): void {
     return true
   })
 
-  ipcMain.handle('system/revealDatabase', async (): Promise<boolean> => {
+  handleDatabaseIpc('system/revealDatabase', async (): Promise<boolean> => {
     const databasePath = getDatabasePath()
     shell.showItemInFolder(databasePath)
     return true
   })
 
-  ipcMain.handle('system/revealPath', (_event, targetPath: string): boolean => {
+  handleDatabaseIpc('system/revealPath', (_event, targetPath: string): boolean => {
     if (!targetPath.trim()) return false
 
     shell.showItemInFolder(targetPath)
     return true
   })
 
-  ipcMain.handle('system/openExternal', async (_event, targetUrl: string): Promise<boolean> => {
+  handleDatabaseIpc('system/openExternal', async (_event, targetUrl: string): Promise<boolean> => {
     const url = new URL(targetUrl)
     if (url.protocol !== 'https:' && url.protocol !== 'http:') return false
 
@@ -57,7 +58,7 @@ export function registerSystemIpc(): void {
     return true
   })
 
-  ipcMain.handle('system/takePendingMailtoRequests', () => takePendingMailtoRequests())
-  ipcMain.handle('system/defaultMailClientStatus', () => getDefaultMailClientStatus())
-  ipcMain.handle('system/configureDefaultMailClient', () => configureDefaultMailClient())
+  handleDatabaseIpc('system/takePendingMailtoRequests', () => takePendingMailtoRequests())
+  handleDatabaseIpc('system/defaultMailClientStatus', () => getDefaultMailClientStatus())
+  handleDatabaseIpc('system/configureDefaultMailClient', () => configureDefaultMailClient())
 }

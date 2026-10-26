@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron'
+import { handleDatabaseIpc } from './database-handler'
 import {
   bulkDelete,
   deleteMessageToTrash,
@@ -16,10 +16,10 @@ import type {
 } from './types'
 
 export function registerMessageActionIpc(): void {
-  ipcMain.handle('messages/delete', async (_event, input: MessageDeleteInput) => {
+  handleDatabaseIpc('messages/delete', async (_event, input: MessageDeleteInput) => {
     return deleteOneMessage(input)
   })
-  ipcMain.handle('messages/bulkDelete', async (_event, input: MessageBulkDeleteInput) => {
+  handleDatabaseIpc('messages/bulkDelete', async (_event, input: MessageBulkDeleteInput) => {
     const mode = normalizeDeleteMode(input.mode)
     const result = await bulkDelete(input.messageIds, {
       localOnly: mode === 'local_hide',
@@ -34,11 +34,11 @@ export function registerMessageActionIpc(): void {
       failedCount: result.failedCount
     } satisfies MessageBulkDeleteResult
   })
-  ipcMain.handle('messages/hideLocal', (_event, messageId: number) => {
+  handleDatabaseIpc('messages/hideLocal', (_event, messageId: number) => {
     const result = hideMessageLocally(messageId)
     return toDeleteResult(result.messageId, result.accountId, 'local_hide', true, true)
   })
-  ipcMain.handle('messages/restore', async (_event, messageId: number) => {
+  handleDatabaseIpc('messages/restore', async (_event, messageId: number) => {
     const result = await restoreMessage(messageId)
     return {
       messageId: result.messageId,

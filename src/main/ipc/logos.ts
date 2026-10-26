@@ -1,10 +1,10 @@
-import { ipcMain } from 'electron'
+import { handleDatabaseIpc } from './database-handler'
 
 const LOGO_CACHE = new Map<string, string | null>()
 const LOGO_TIMEOUT_MS = 5000
 
 export function registerLogoIpc(): void {
-  ipcMain.handle('logos/get', async (_event, domain: string) => getLogoDataUrl(domain))
+  handleDatabaseIpc('logos/get', async (_event, domain: string) => getLogoDataUrl(domain))
 }
 
 export async function getLogoDataUrl(domain: string): Promise<string | null> {

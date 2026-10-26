@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron'
+import { handleDatabaseIpc } from './database-handler'
 import { getDatabase, toNumber } from '../db/connection'
 import {
   getSyncStatus,
@@ -11,7 +11,7 @@ import { scheduleImapTask } from '../services/imap-scheduler'
 import type { AccountSyncRunResult } from './types'
 
 export function registerSyncIpc(): void {
-  ipcMain.handle('sync/startAll', async (_event, mode?: AccountMailboxSyncMode) => {
+  handleDatabaseIpc('sync/startAll', async (_event, mode?: AccountMailboxSyncMode) => {
     const syncMode = normalizeSyncMode(mode)
     const rows = getDatabase()
       .prepare<{
@@ -27,7 +27,7 @@ export function registerSyncIpc(): void {
     }
     return getSyncStatus()
   })
-  ipcMain.handle(
+  handleDatabaseIpc(
     'sync/startAccount',
     async (
       _event,
@@ -44,7 +44,7 @@ export function registerSyncIpc(): void {
       }
     }
   )
-  ipcMain.handle('sync/status', () => getSyncStatus())
+  handleDatabaseIpc('sync/status', () => getSyncStatus())
 }
 
 async function syncAccountWithNotification(

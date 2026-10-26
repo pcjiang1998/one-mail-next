@@ -1,3 +1,5 @@
+import { withDatabaseTask } from '../db/activity'
+
 const messages = new Map<number, number>()
 const accounts = new Map<number, number>()
 
@@ -8,7 +10,7 @@ async function track<T>(
 ): Promise<T> {
   entries.set(id, (entries.get(id) ?? 0) + 1)
   try {
-    return await run()
+    return await withDatabaseTask(run)
   } finally {
     const remaining = entries.get(id)! - 1
     if (remaining) entries.set(id, remaining)

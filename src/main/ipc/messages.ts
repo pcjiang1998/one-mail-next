@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron'
+import { handleDatabaseIpc } from './database-handler'
 import {
   getMessage,
   listAccountMailboxStats,
@@ -15,11 +15,11 @@ import {
 import type { MessageBulkReadStateInput, MessageListQuery, MessageMarkAllReadInput } from './types'
 
 export function registerMessageIpc(): void {
-  ipcMain.handle('messages/access', (_event, messageId: number) => touchMessageAccess(messageId))
-  ipcMain.handle('messages/list', (_event, query?: MessageListQuery) => listMessages(query))
-  ipcMain.handle('messages/stats', () => listAccountMailboxStats())
-  ipcMain.handle('messages/get', (_event, messageId: number) => getMessage(messageId))
-  ipcMain.handle('messages/loadBody', async (_event, messageId: number) => {
+  handleDatabaseIpc('messages/access', (_event, messageId: number) => touchMessageAccess(messageId))
+  handleDatabaseIpc('messages/list', (_event, query?: MessageListQuery) => listMessages(query))
+  handleDatabaseIpc('messages/stats', () => listAccountMailboxStats())
+  handleDatabaseIpc('messages/get', (_event, messageId: number) => getMessage(messageId))
+  handleDatabaseIpc('messages/loadBody', async (_event, messageId: number) => {
     const cachedBody = loadMessageBody(messageId)
     if (cachedBody) return { body: cachedBody }
 
@@ -33,16 +33,16 @@ export function registerMessageIpc(): void {
       }
     }
   })
-  ipcMain.handle('messages/setReadState', (_event, messageId: number, isRead: boolean) =>
+  handleDatabaseIpc('messages/setReadState', (_event, messageId: number, isRead: boolean) =>
     syncMessageReadState(messageId, isRead)
   )
-  ipcMain.handle('messages/bulkSetReadState', (_event, input: MessageBulkReadStateInput) =>
+  handleDatabaseIpc('messages/bulkSetReadState', (_event, input: MessageBulkReadStateInput) =>
     syncMessagesReadState(input.messageIds, input.isRead)
   )
-  ipcMain.handle('messages/markAllRead', (_event, input?: MessageMarkAllReadInput) =>
+  handleDatabaseIpc('messages/markAllRead', (_event, input?: MessageMarkAllReadInput) =>
     markUnreadMessagesRead(input?.query)
   )
-  ipcMain.handle('messages/downloadAttachment', (_event, attachmentId: number) =>
+  handleDatabaseIpc('messages/downloadAttachment', (_event, attachmentId: number) =>
     downloadAttachment(attachmentId)
   )
 }

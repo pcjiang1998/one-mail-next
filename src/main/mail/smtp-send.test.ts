@@ -1,8 +1,33 @@
 import { describe, expect, it } from 'vitest'
 
-import { isOAuthSmtpAuthError } from './smtp-send'
+import { isDefiniteSmtpRejection, isOAuthSmtpAuthError } from './smtp-send'
 
 describe('smtp send OAuth retry detection', () => {
+  it('distinguishes negative SMTP responses from a timeout after DATA', () => {
+    expect(
+      isDefiniteSmtpRejection(
+        Object.assign(new Error('rejected'), {
+          responseCode: 451
+        })
+      )
+    ).toBe(true)
+    expect(
+      isDefiniteSmtpRejection(
+        Object.assign(new Error('connect timeout'), {
+          command: 'CONN',
+          code: 'ETIMEDOUT'
+        })
+      )
+    ).toBe(true)
+    expect(
+      isDefiniteSmtpRejection(
+        Object.assign(new Error('final response timeout'), {
+          command: 'DATA',
+          code: 'ETIMEDOUT'
+        })
+      )
+    ).toBe(false)
+  })
   it('treats nodemailer auth errors as OAuth retryable', () => {
     const error = new Error('Invalid login: 535 5.7.3 Authentication unsuccessful')
     ;(error as { code?: string }).code = 'EAUTH'

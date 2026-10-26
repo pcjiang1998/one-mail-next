@@ -8,6 +8,7 @@ import { loadMessageBodyFromImap, persistRawMessageBody } from './body-loader'
 import { Pop3Session } from './pop3-session'
 import { syncCutoff } from '../../shared/sync-range'
 import { withAccountCacheAccess } from '../services/cache-activity'
+import { enqueueMailRulesForNewMessages } from '../services/mail-rule-engine.service'
 
 export type Pop3SyncStats = {
   scannedCount: number
@@ -29,11 +30,14 @@ type ParsedHeader = {
 
 type ParsedAddress = { name?: string; email: string }
 
-export function syncPop3Account(accountId: number): Promise<Pop3SyncStats> {
-  return withAccountCacheAccess(accountId, () => syncPop3AccountCore(accountId))
+export function syncPop3Account(accountId: number, initialSync = false): Promise<Pop3SyncStats> {
+  return withAccountCacheAccess(accountId, () => syncPop3AccountCore(accountId, initialSync))
 }
 
-async function syncPop3AccountCore(accountId: number): Promise<Pop3SyncStats> {
+async function syncPop3AccountCore(
+  accountId: number,
+  initialSync: boolean
+): Promise<Pop3SyncStats> {
   const account = getAccount(accountId)
   if (!account) throw new Error(`Account not found: ${accountId}`)
   if (account.receiveProtocol !== 'pop3') throw new Error('账号不是 POP3 协议。')
@@ -109,6 +113,7 @@ async function syncPop3AccountCore(accountId: number): Promise<Pop3SyncStats> {
           FROM onemail_mail_messages WHERE message_id = :messageId
           AND NOT EXISTS (SELECT 1 FROM onemail_message_search WHERE message_id = :messageId)`
         ).run({ messageId })
+        enqueueMailRulesForNewMessages(isBackfill ? [] : [messageId], { initialSync })
         db.exec('COMMIT')
       } catch (error) {
         db.exec('ROLLBACK')

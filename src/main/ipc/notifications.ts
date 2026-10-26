@@ -1,6 +1,6 @@
-import { ipcMain } from 'electron'
+import { handleDatabaseIpc } from './database-handler'
 import { getNotificationStatus } from '../services/notification-center'
 
 export function registerNotificationIpc(): void {
-  ipcMain.handle('notifications/status', () => getNotificationStatus())
+  handleDatabaseIpc('notifications/status', () => getNotificationStatus())
 }

@@ -1,22 +1,23 @@
-import { ipcMain } from 'electron'
+import { handleDatabaseIpc } from './database-handler'
 import {
   checkForAppUpdates,
-  checkGitHubReleaseForUpdates,
+  downloadAppUpdate,
   getAppUpdateStatus,
   installDownloadedAppUpdate
 } from '../services/auto-update'
 import type { AppUpdateCheckResult, AppUpdateStatus } from './types'
 
 export function registerUpdateIpc(): void {
-  ipcMain.handle('updates/check', async (): Promise<AppUpdateCheckResult> => {
-    const result = await checkForAppUpdates()
-    checkGitHubReleaseForUpdates()
-    return result
+  handleDatabaseIpc('updates/check', async (): Promise<AppUpdateCheckResult> => {
+    return checkForAppUpdates()
   })
-  ipcMain.handle('updates/status', (): AppUpdateStatus => {
+  handleDatabaseIpc('updates/download', (): Promise<boolean> => {
+    return downloadAppUpdate()
+  })
+  handleDatabaseIpc('updates/status', (): AppUpdateStatus => {
     return getAppUpdateStatus()
   })
-  ipcMain.handle('updates/install', (): boolean => {
+  handleDatabaseIpc('updates/install', (): boolean => {
     return installDownloadedAppUpdate()
   })
 }

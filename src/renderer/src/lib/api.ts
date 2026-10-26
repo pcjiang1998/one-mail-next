@@ -166,6 +166,7 @@ export type OutboxMessage = {
   references?: string
   lastError?: string
   lastWarning?: string
+  deliveryUncertain?: boolean
   updatedAt: string
 }
 
@@ -406,6 +407,10 @@ export function onAppUpdateStatus(callback: (status: AppUpdateStatus) => void): 
   if (typeof onStatus !== 'function') return () => {}
 
   return onStatus(callback)
+}
+
+export async function downloadAppUpdate(): Promise<boolean> {
+  return window.api.updates.download()
 }
 
 export async function installAppUpdate(): Promise<boolean> {
@@ -801,6 +806,7 @@ function toUiOutboxMessage(message: SharedOutboxMessage): OutboxMessage {
     references: message.referencesHeader,
     lastError: message.lastError,
     lastWarning: message.lastWarning,
+    deliveryUncertain: message.deliveryUncertain,
     updatedAt: message.updatedAt
   }
 }

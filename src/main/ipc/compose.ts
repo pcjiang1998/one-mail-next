@@ -1,6 +1,7 @@
+import { handleDatabaseIpc } from './database-handler'
 import { readFileSync, statSync } from 'node:fs'
 import { basename, extname } from 'node:path'
-import { BrowserWindow, dialog, ipcMain, type OpenDialogOptions } from 'electron'
+import { BrowserWindow, dialog, type OpenDialogOptions } from 'electron'
 import { getAccount } from '../db/repositories/account.repository'
 import {
   createOutboxRecord,
@@ -19,6 +20,7 @@ import { createMessageId } from '../mail/message-composer'
 import { createReplyDraft } from '../mail/reply-draft'
 import { resolveAccountSignature } from '../db/repositories/settings.repository'
 import { retryOutboxEmail, sendPlainTextEmail } from '../mail/smtp-send'
+import { authorizeComposeAttachments, authorizeSelectedFile } from '../services/compose-file-access'
 import type { DraftListQuery, DraftListResult } from '../../shared/types'
 import type {
   ComposeDraft,
@@ -34,7 +36,7 @@ import type {
 } from './types'
 
 export function registerComposeIpc(): void {
-  ipcMain.handle(
+  handleDatabaseIpc(
     'compose/createNewDraft',
     (_event, accountId: number) =>
       ({
@@ -47,7 +49,7 @@ export function registerComposeIpc(): void {
         bodyText: applySignature('', resolveAccountSignature(accountId))
       }) satisfies ComposeDraft
   )
-  ipcMain.handle('compose/createReplyDraft', async (_event, input: ReplyDraftInput) => {
+  handleDatabaseIpc('compose/createReplyDraft', async (_event, input: ReplyDraftInput) => {
     const draft = await createReplyDraft(input.messageId, input.mode)
     return {
       accountId: draft.accountId,
@@ -64,7 +66,7 @@ export function registerComposeIpc(): void {
     } satisfies ComposeDraft
   })
 
-  ipcMain.handle('compose/createForwardDraft', async (_event, input: ForwardDraftInput) => {
+  handleDatabaseIpc('compose/createForwardDraft', async (_event, input: ForwardDraftInput) => {
     const draft = await createForwardDraft(input.messageId)
     return {
       accountId: draft.accountId,
@@ -86,52 +88,52 @@ export function registerComposeIpc(): void {
     } satisfies ComposeDraft
   })
 
-  ipcMain.handle('compose/createBulkForwardDraft', async (_event, input: BulkForwardDraftInput) => {
-    const draft = await createBulkForwardDraft(input.messageIds)
-    return {
-      ...draft,
-      bodyText: applySignature(draft.bodyText, resolveAccountSignature(draft.accountId))
+  handleDatabaseIpc(
+    'compose/createBulkForwardDraft',
+    async (_event, input: BulkForwardDraftInput) => {
+      const draft = await createBulkForwardDraft(input.messageIds)
+      return {
+        ...draft,
+        bodyText: applySignature(draft.bodyText, resolveAccountSignature(draft.accountId))
+      }
     }
-  })
+  )
 
-  ipcMain.handle('compose/send', async (_event, input: MailSendInput): Promise<MailSendResult> => {
-    const result = await sendPlainTextEmail({
-      outboxId: input.outboxId,
-      accountId: input.accountId,
-      composeKind: input.mode,
-      relatedMessageId: input.relatedMessageId,
-      to: input.to,
-      cc: input.cc,
-      bcc: input.bcc,
-      subject: input.subject,
-      bodyText: input.bodyText,
-      bodyHtml: input.bodyHtml,
-      inReplyTo: input.inReplyTo,
-      references: input.referencesHeader,
-      attachments: input.attachments?.map((attachment) => ({
-        filePath: attachment.filePath,
-        filename: attachment.filename,
-        mimeType: attachment.mimeType,
-        sourceMessageId: attachment.sourceMessageId,
-        sourceAttachmentId: attachment.sourceAttachmentId,
-        sizeBytes: attachment.sizeBytes
-      }))
-    })
-    const sentAt = result.date.toISOString()
+  handleDatabaseIpc(
+    'compose/send',
+    async (event, input: MailSendInput): Promise<MailSendResult> => {
+      const attachments = authorizeComposeAttachments(event.sender, input, true)
+      const result = await sendPlainTextEmail({
+        outboxId: input.outboxId,
+        accountId: input.accountId,
+        composeKind: input.mode,
+        relatedMessageId: input.relatedMessageId,
+        to: input.to,
+        cc: input.cc,
+        bcc: input.bcc,
+        subject: input.subject,
+        bodyText: input.bodyText,
+        bodyHtml: input.bodyHtml,
+        inReplyTo: input.inReplyTo,
+        references: input.referencesHeader,
+        attachments
+      })
+      const sentAt = result.date.toISOString()
 
-    const payload: MailSendResult = {
-      outboxId: result.outboxId ?? 0,
-      accountId: input.accountId,
-      status: 'sent',
-      rfc822MessageId: result.messageId,
-      sentAt,
-      warning: result.warning
+      const payload: MailSendResult = {
+        outboxId: result.outboxId ?? 0,
+        accountId: input.accountId,
+        status: 'sent',
+        rfc822MessageId: result.messageId,
+        sentAt,
+        warning: result.warning
+      }
+      broadcastSent(payload)
+      return payload
     }
-    broadcastSent(payload)
-    return payload
-  })
+  )
 
-  ipcMain.handle('compose/selectAttachments', async (event): Promise<MailAttachmentInput[]> => {
+  handleDatabaseIpc('compose/selectAttachments', async (event): Promise<MailAttachmentInput[]> => {
     const window = BrowserWindow.fromWebContents(event.sender)
     const options: OpenDialogOptions = {
       properties: ['openFile', 'multiSelections']
@@ -141,7 +143,8 @@ export function registerComposeIpc(): void {
       : await dialog.showOpenDialog(options)
     if (result.canceled) return []
 
-    return result.filePaths.map((filePath) => {
+    return result.filePaths.map((selectedPath) => {
+      const filePath = authorizeSelectedFile(event.sender, selectedPath)
       const stat = statSync(filePath)
       if (!stat.isFile()) {
         throw new Error(`附件不是普通文件：${filePath}`)
@@ -155,7 +158,7 @@ export function registerComposeIpc(): void {
     })
   })
 
-  ipcMain.handle(
+  handleDatabaseIpc(
     'compose/selectInlineImage',
     async (event): Promise<InlineImageSelection | null> => {
       const window = BrowserWindow.fromWebContents(event.sender)
@@ -179,19 +182,19 @@ export function registerComposeIpc(): void {
     }
   )
 
-  ipcMain.handle('compose/listOutbox', (_event, query?: OutboxListQuery): OutboxMessage[] =>
+  handleDatabaseIpc('compose/listOutbox', (_event, query?: OutboxListQuery): OutboxMessage[] =>
     listOutboxRecords({
       statuses: query?.statuses,
       limit: query?.limit
     }).map(toOutboxMessage)
   )
 
-  ipcMain.handle('compose/listDrafts', (_event, query?: DraftListQuery): DraftListResult => {
+  handleDatabaseIpc('compose/listDrafts', (_event, query?: DraftListQuery): DraftListResult => {
     const result = listDraftRecords(query)
     return { ...result, messages: result.messages.map(toOutboxMessage) }
   })
 
-  ipcMain.handle('compose/saveDraft', (_event, input: MailSendInput): OutboxMessage => {
+  handleDatabaseIpc('compose/saveDraft', (event, input: MailSendInput): OutboxMessage => {
     const account = getAccount(input.accountId)
     if (!account) throw new Error(`Account not found: ${input.accountId}`)
 
@@ -213,14 +216,7 @@ export function registerComposeIpc(): void {
       subject: input.subject,
       bodyText: input.bodyText,
       bodyHtml: input.bodyHtml,
-      attachments: input.attachments?.map((attachment) => ({
-        filePath: attachment.filePath,
-        filename: attachment.filename,
-        mimeType: attachment.mimeType,
-        sourceMessageId: attachment.sourceMessageId,
-        sourceAttachmentId: attachment.sourceAttachmentId,
-        sizeBytes: attachment.sizeBytes
-      }))
+      attachments: authorizeComposeAttachments(event.sender, input, false)
     }
     const record = input.outboxId
       ? updateOutboxRecord(input.outboxId, draftInput)
@@ -228,12 +224,12 @@ export function registerComposeIpc(): void {
 
     return toOutboxMessage(record)
   })
-  ipcMain.handle('compose/deleteDraft', (_event, outboxId: number) => {
+  handleDatabaseIpc('compose/deleteDraft', (_event, outboxId: number) => {
     const record = requireOutboxRecord(outboxId)
     if (record.status !== 'draft') throw new Error('只能删除草稿记录。')
     return deleteOutboxRecord(outboxId)
   })
-  ipcMain.handle('compose/retry', async (_event, outboxId: number): Promise<MailSendResult> => {
+  handleDatabaseIpc('compose/retry', async (_event, outboxId: number): Promise<MailSendResult> => {
     const result = await retryOutboxEmail(outboxId)
     const record = requireOutboxRecord(outboxId)
     const payload: MailSendResult = {
@@ -247,13 +243,13 @@ export function registerComposeIpc(): void {
     broadcastSent(payload)
     return payload
   })
-  ipcMain.handle('compose/deleteDrafts', (_event, outboxIds: number[]) =>
+  handleDatabaseIpc('compose/deleteDrafts', (_event, outboxIds: number[]) =>
     deleteDraftRecords(outboxIds)
   )
-  ipcMain.handle('compose/clearOutbox', (_event, status: 'sent' | 'failed') =>
+  handleDatabaseIpc('compose/clearOutbox', (_event, status: 'sent' | 'failed') =>
     clearOutboxRecords(status)
   )
-  ipcMain.handle('compose/deleteOutbox', (_event, outboxId: number) => {
+  handleDatabaseIpc('compose/deleteOutbox', (_event, outboxId: number) => {
     const record = requireOutboxRecord(outboxId)
     if (record.status === 'sending') throw new Error('发送中的记录不能直接删除。')
     return deleteOutboxRecord(outboxId)
@@ -327,6 +323,7 @@ function toOutboxMessage(record: OutboxRecord): OutboxMessage {
     deletedAt: record.deletedAt,
     lastError: record.lastError,
     lastWarning: record.lastWarning,
+    deliveryUncertain: record.deliveryUncertain,
     createdAt: record.createdAt ?? '',
     updatedAt: record.updatedAt ?? ''
   }

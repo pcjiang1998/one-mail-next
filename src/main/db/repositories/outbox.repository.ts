@@ -40,6 +40,7 @@ export type OutboxRecord = OutboxCreateInput & {
   deletedAt?: string
   lastError?: string
   lastWarning?: string
+  deliveryUncertain?: boolean
   createdAt?: string
   updatedAt?: string
 }
@@ -66,6 +67,7 @@ type OutboxRow = SqliteRow & {
   deleted_at: string | null
   last_error: string | null
   last_warning: string | null
+  delivery_uncertain: number
   created_at: string | null
   updated_at: string | null
 }
@@ -174,7 +176,7 @@ export function updateOutboxRecord(outboxId: number, input: OutboxCreateInput): 
           raw_mime = COALESCE(:rawMime, raw_mime),
           last_error = NULL,
           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-      WHERE outbox_id = :outboxId
+      WHERE outbox_id = :outboxId AND account_id = :accountId AND status = 'draft'
       `
     )
     .run({
@@ -310,6 +312,7 @@ export function markOutboxSending(outboxId: number): void {
       `
       UPDATE onemail_outbox_messages
       SET status = 'sending',
+          delivery_uncertain = 1,
           last_error = NULL,
           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE outbox_id = :outboxId
@@ -325,6 +328,7 @@ export function markOutboxSent(outboxId: number, rawMime?: string): void {
       `
       UPDATE onemail_outbox_messages
       SET status = 'sent',
+          delivery_uncertain = 0,
           sent_at = COALESCE(sent_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
           raw_mime = COALESCE(:rawMime, raw_mime),
           last_error = NULL,
@@ -335,19 +339,24 @@ export function markOutboxSent(outboxId: number, rawMime?: string): void {
     .run({ outboxId, rawMime: rawMime ?? null })
 }
 
-export function markOutboxFailed(outboxId: number, errorMessage: string): void {
+export function markOutboxFailed(
+  outboxId: number,
+  errorMessage: string,
+  deliveryUncertain = false
+): void {
   ensureOutboxTables()
   getDatabase()
     .prepare(
       `
       UPDATE onemail_outbox_messages
       SET status = 'failed',
+          delivery_uncertain = :deliveryUncertain,
           last_error = :errorMessage,
           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE outbox_id = :outboxId
       `
     )
-    .run({ outboxId, errorMessage })
+    .run({ outboxId, errorMessage, deliveryUncertain: deliveryUncertain ? 1 : 0 })
 }
 
 export function updateOutboxWarning(outboxId: number, warningMessage: string): void {
@@ -476,6 +485,7 @@ export function ensureOutboxTables(db = getDatabase()): void {
       deleted_at TEXT,
       last_error TEXT,
       last_warning TEXT,
+      delivery_uncertain INTEGER NOT NULL DEFAULT 0 CHECK (delivery_uncertain IN (0, 1)),
       created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
       updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     );
@@ -524,6 +534,7 @@ function mapOutboxRow(row: OutboxRow): OutboxRecord {
     deletedAt: toOptionalString(row.deleted_at),
     lastError: toOptionalString(row.last_error),
     lastWarning: toOptionalString(row.last_warning),
+    deliveryUncertain: row.delivery_uncertain === 1,
     createdAt: toOptionalString(row.created_at),
     updatedAt: toOptionalString(row.updated_at)
   }
